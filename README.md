@@ -13,30 +13,30 @@ This repository contains R scripts for the analysis of long non-coding RNAs (lnc
 
 ## Project Overview
 
-In this project, we aim to investigate the role of lncRNAs impacted by CNVs in CHD. Using the WGCNA method, we identified key gene modules and candidate lncRNAs associated with heart development. This repository contains R Markdown notebooks that guide the data processing, analysis, and visualization steps:
-
-1. **Penaloza_CCVM_Notebook_1A.Rmd**: Preprocessing and normalization of gene expression data (TPM), including filtering by expression threshold and initial clustering of genes for network analysis.
-   
-2. **Penaloza_CCVM_Notebook_1B.Rmd**: Construction of weighted gene co-expression networks (WGCNA), identification of heart-specific modules, and functional enrichment analysis of candidate lncRNAs.
+In this project, we aim to investigate the role of lncRNAs impacted by CNVs in CHD. Using the WGCNA method, we identified key gene modules and candidate lncRNAs associated with heart development. This repository contains R Markdown notebooks and rendered HTML files that guide the data processing, analysis, and visualization steps.
 
 ## Repository Contents
 
-- **Penaloza_CCVM_Notebook_1A.Rmd**: Contains code for the preprocessing of RNA-Seq data, thresholding TPM values, and data normalization.
-- **Penaloza_CCVM_Notebook_1B.Rmd**: Contains code for WGCNA analysis, identification of hub genes, and visualization of key gene modules.
-- **InputData**: This folder contains the CCVM data file from which all analysis is dependent. `02032023_CCVM_abnormalEcho.Rds` is a binary R file required for the script to run. `02032023_CCVM_abnormalEcho.xlsx` is the data in Microsoft Excel format.
-- **/PublicData**: This folder contains all of the publically available data that is required for the analysis. This includes:
--- *lncExpDB_E-MTABGeneTPM.tsv*: Normalized TPM values for the developmental time series data
--- *E-MTAB-6814.sdrf.txt*: Metadata for the developmental time series
--- *LncBookv1.9_GENCODEv33_GRCh38.gtf.gz*: GTF file used for RNA-Seq transcript quantification
--- *UCSC_hg19ToHg38.over.chain*: Chain file to liftover genomic coordinates from GRCh37 to GRCh38
--- *LncBook_id_conversion.csv*: LncBook provided conversions of LncBook accessions
--- *RNACentral_lncbook.tsv*: RNACentral to LncBook accessions
--- *RNACentral_ensembl.tsv*: RNACenral to Ensembl accessions
--- *chdgene_table.csv*: List of 142 known CHD genes from CHDgene website
--- *Cotney_CircRes_316709_online_table_v.xlsx*: VanOudenhove et al., 2020. Table V
-- **/Results**: This folder will contain output files such as gene module lists, hub gene lists, and GO enrichment analysis results after running the scripts.
-- **/Figures**: This folder will contain plots and visualizations generated during the analysis. All are found in our manuscript.
-- **/
+1. **Penaloza_CCVM_Notebook_1A.Rmd**: R-notebook preprocessing of datasets and pinpointing lncRNAs within clinically validated CNVs.
+2. **Penaloza_CCVM_Notebook_1B.Rmd**: R-notebook for co-expression networks, identification and functional analysis of lncRNA-CNVs.
+
+   - **InputData**: This folder contains the CCVM data file from which all analysis is dependent.
+      - `02032023_CCVM_abnormalEcho.Rds` is a binary R file required for the script to run. `02032023_CCVM_abnormalEcho.xlsx` is the data in Microsoft Excel format.
+   - **PublicData**: This zip folder contains all of the publically available data that is required for the analysis.
+      - Available for dowload on zenodo: [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.13799847.svg)](https://doi.org/10.5281/zenodo.13799847)
+      - This includes:
+         - *lncExpDB_E-MTABGeneTPM.tsv*: Normalized TPM values for the developmental time series data
+         - *E-MTAB-6814.sdrf.txt*: Metadata for the developmental time series
+         - *LncBookv1.9_GENCODEv33_GRCh38.gtf.gz*: GTF file used for RNA-Seq transcript quantification
+         - *UCSC_hg19ToHg38.over.chain*: Chain file to liftover genomic coordinates from GRCh37 to GRCh38
+         - *LncBook_id_conversion.csv*: LncBook provided conversions of LncBook accessions
+         - *RNACentral_lncbook.tsv*: RNACentral to LncBook accessions
+         - *RNACentral_ensembl.tsv*: RNACenral to Ensembl accessions
+         - *chdgene_table.csv*: List of 142 known CHD genes from CHDgene website
+         - *Cotney_CircRes_316709_online_table_v.xlsx*: VanOudenhove et al., 2020. Table V
+   - **Results**: This folder will contain output files such as gene module lists, hub gene lists, and GO enrichment analysis results after running the scripts.
+   - **Figures**: This folder will contain plots and visualizations generated during the analysis. All are found in our manuscript.
+
 
 
 ## Dependencies
