@@ -1,0 +1,2824 @@
+---
+title: "Data Wrangling CHD Cohort Supplemental Script 1B"
+author: "Jacqueline Penaloza and Peter White"
+date: "`r Sys.Date()`"
+department: "The Office of Data Sciences"
+organization: "Abigail Wexner Research Institute, Nationwide Children's Hospital"
+address: "575 Children's Crossroad, Columbus, OH 43215"
+output:
+  rmdformats::downcute:
+    code_folding: show           # Show code by default with folding
+    self_contained: true         # Ensure the HTML file is self-contained
+    thumbnails: false            # Disable thumbnails
+    lightbox: true               # Enable lightbox for images
+    gallery: false               # Disable gallery view for images (replaces thumbnails)
+    downcute_theme: "default"    # Use the light theme (options: “default”, “chaos”)
+    number_sections: true        # Enable numbered sections
+    toc_depth: 3                 # Set the depth of the table of contents
+    css: "Penaloza_Custom_Styling.css"  # Link to the external CSS file
+editor_options:
+  markdown:
+    wrap: sentence               # Wrap lines at sentence boundaries
+  chunk_output_type: console     # Show code chunk output in the console
+pkgdown:
+  as_is: true                    # Maintain formatting with pkgdown
+---
+
+# Environment Setup
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook for Supplemental Script 1B of the WGCNA Application, Pearson Correlation of modules identified utilizing multi-organ RNA-seq. We aim to apply methods developed in Lu et al. 2023 to our CNV cohort and all original code developed below is based on reading the methods portion of the paper. In this notebook we are providing a reproducible framework to study CNV-lncRNAs in any disease context. 
+
+
+```{r Packages_directory, message=FALSE, warning=FALSE}
+# Load necessary libraries for data manipulation and visualization
+library(data.table)       # Efficient data handling
+library(edgeR)            # Normalzing counts to TMM
+library(WGCNA)            # Network analysis
+library(RCy3)             # Cytoscape connectivity
+library(tidyr)            # Data tidying
+library(stringr)          # String manipulation
+library(readr)            # Fast, efficient CSV reading into tibbles
+library(dplyr)            # Data manipulation
+library(tibble)           # For adding rows to tibbles/data frames
+library(reshape2)         # For reshaping data
+library(purrr)            # Functional programming tools for data
+library(writexl)          # Export data to Excel
+library(ggplot2)          # Visualization
+library(grid)             # Load the grid package for grid graphics
+library(gridExtra)        # Arrange multiple ggplot objects in grid layouts
+library(ggdendro)         # Creates ggplot2-compatible dendrogram plots
+library(ggrepel)          # Label positioning in ggplot
+library(Cairo)            # Creates high quality PDFs for publication
+library(DESeq2)           # Normalization of TPM data
+library(readxl)           # Read excel files
+library(clusterProfiler)  # Functional enrichment analysis
+library(GOSemSim)         # Semantic similarity for GO terms
+library(org.Hs.eg.db)     # Human genome annotations
+library(rtracklayer)      # GTF file handling
+library(igraph)           # Graphing networks
+library(gprofiler2)       # Gene profiling
+library(eulerr)           # Proportional Euler and Venn diagrams in R.
+library(viridis)          # Colorblind-friendly color palettes
+library(gplots)           # Various plotting tools
+library(ggpubr)           # Enhanced plotting features with ggplot2
+library(kableExtra)       # For table styling
+library(knitr)            # For creating tables in R Markdown
+library(here)             # File path management
+library(foreach)          # Enables loop parallelization and iteration in R
+library(doParallel)       # Registers parallel backend for parallel computing
+
+# Set global options
+options(stringsAsFactors = FALSE)  # Set stringsAsFactors to FALSE globally - recommended for WGCNA
+
+# Define a custom option to control chunk evaluation
+options(eval_chunks = TRUE)
+
+# Set the global chunk option based on the custom option
+knitr::opts_chunk$set(
+  eval = getOption("eval_chunks"),
+  fig.width = 12,
+  fig.height = 8,
+  out.width = '80%',
+  fig.align = 'center',
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+
+# Set the current working directory for the 'here' package
+here::i_am("Penaloza_CCVM_Notebook_1B.Rmd")
+
+# Source the shared functions
+source(here::here("Penaloza_Shared_Scripts.R"))
+```
+
+# RNA-Seq Data loading of Multiorgan Developmental Time Series
+
+We utilized the human organ RNA-Seq time-series of the development of seven major organs (ArrayExpress Accession Number E-MTAB-6814). The dataset covers 23 developmental stages across 7 organs (n=313: brain/forebrain 55, hindbrain/cerebellum 59, heart 50, kidney 40, liver 50, ovary 18, and testis 41), starting at 4 weeks post-conception until 58-63 years of age.
+
+>Cardoso-Moreira M, Halbert J, Valloton D, Velten B, Chen C, Shao Y, Liechti A, Ascenção K, Rummel C, Ovchinnikova S, Mazin PV, Xenarios I, Harshman K, Mort M, Cooper DN, Sandi C, Soares MJ, Ferreira PG, Afonso S, Carneiro M, Turner JMA, VandeBerg JL, Fallahshahroudi A, Jensen P, Behr R, Lisgo S, Lindsay S, Khaitovich P, Huber W, Baker J, Anders S, Zhang YE, Kaessmann H. Gene expression across mammalian organ development. Nature. 2019 Jul;571(7766):505-509. doi: 10.1038/s41586-019-1338-5. Epub 2019 Jun 26. PMID: 31243369; PMCID: PMC6658352.
+
+## Prepare Sample Metadata
+
+The sample metadata is found after extracting `expression_profiles_E-MTAB-6814.tar.gz` within the file `E-MTAB-6814.csv`. After downloading and extracting, the file was renamed `lncExpDB_E-MTAB-6814_Metadata.csv` and placed in the `PublicData` directory. 
+
+https://www.ebi.ac.uk/biostudies/arrayexpress/studies/E-MTAB-6814
+
+The sample metadata can be downloaded from ArrayExpress - the MAGE-TAB file is `E-MTAB-6814.sdrf.txt`. File was downloaded and placed in the `PublicData` directory. 
+
+Note: ERS2510278 is mislabelled "5911sTS.Human.KidneyTestis.4w.Male" - it is a kidney sample, which is correctly classified in the Organ column as "kidney".
+
+```{r Import Metadata}
+# Specify the data directory and file path
+dir_path <- "PublicData"
+
+# Define the file path
+file_path <- file.path(dir_path, "E-MTAB-6814.sdrf.txt")
+
+# Read the CSV file, select specific columns, and rename them
+TPM_metadata <- read_tsv(file_path, show_col_types = FALSE, col_select = c(
+  `Source Name`,
+  `Comment[ENA_SAMPLE]`,
+  `Characteristics[individual]`,
+  `Characteristics[developmental stage]`,
+  `Characteristics[age]`,
+  `Unit [time unit]`,
+  `Characteristics[sex]`,
+  `Characteristics[organism part]`
+)) %>%
+  rename(
+    Name = `Source Name`,
+    Sample = `Comment[ENA_SAMPLE]`,
+    Donor = `Characteristics[individual]`,
+    Stage = `Characteristics[developmental stage]`,
+    Age = `Characteristics[age]`,
+    Unit = `Unit [time unit]`,
+    Sex = `Characteristics[sex]`,
+    Organ = `Characteristics[organism part]`
+  )
+
+# Fix Donor identifiers if "not available" - assume unique donors based on age and sex
+TPM_metadata <- TPM_metadata %>%
+  mutate(Donor = case_when(
+    Donor == "not available" ~ paste(Age, Unit, Sex, sep="-"),
+    TRUE ~ Donor  # ensures existing Donor values remain unchanged
+  ))
+
+# Define a function to convert all ages to weeks post conception
+# In humans, the average number of days from conception to birth is approximately
+# 266 days, which is equivalent to about 38 weeks.
+convert_to_days <- function(age, unit) {
+  case_when(
+    unit == "week" ~ age,                   # Convert post conception weeks
+    unit == "year" ~ (age * 52) + 38,       # Convert years 
+    unit == "day" ~ round(age / 7, 0) + 38, # Convert neonatal age
+    unit == "month" ~ (age * 4) + 38,       # Convert months to weeks (approximation)
+    TRUE ~ NA_real_                         # Handle unexpected units
+  )
+}
+
+# Define the correct order of developmental stages
+stage_order <- c(
+  "4 week post conception", "5 week post conception", "6 week post conception",
+  "7 week post conception", "8 week post conception", "9 week post conception", 
+  "10 week post conception", "11 week post conception", "12 week post conception",
+  "13 week post conception", "16 week post conception", "18 week post conception",
+  "19 week post conception", "20 week post conception",
+  "neonate", "infant", "toddler", "school age child", "adolescent", "young adult",
+  "middle adult", "elderly"
+)
+
+# Apply the conversion, turn Stage into a factor
+TPM_metadata <- TPM_metadata %>%
+  mutate(
+    Age_in_Weeks = round(convert_to_days(Age, Unit)),  # Convert Age to days
+    Stage = factor(Stage, levels = stage_order)  # Convert Stage to a factor with the correct order
+  )
+
+# Glimpse the data to verify
+glimpse(TPM_metadata)
+```
+
+In the the developmental time series experiment (https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6658352/), the human prenatal brain was divided into two regions: forebrain together with the midbrain (referred to as the ‘brain’) and hindbrain (referred to as the ‘cerebellum’). Human postnatal ‘brain’ and ‘cerebellum’ samples comprise the dorsolateral prefrontal region of the cerebral cortex and lateral cerebellar cortex, respectively. 
+
+In the ArrayExpress E-MTAB-6814 metadata, the Organ column labels the postnatal "brain"  (i.e., forebrain/cerebrum) as "forebrain". Similarly, the postnatal "cerebellum" (i.e., hindbrain/cerebellum) are labelled as "hindbrain" to match the prenatal samples. 
+
+To be consistent with the publications (Cardoso-Moreira et al., 2019 and Lu et al., 2023) we will label all "forebrain" samples as "brain" and all "hindbrain" samples as "cerebellum".
+
+```{r Fix the organs}
+# Define the correct order of organs
+organ_order <- c("heart", "brain", "cerebellum", "kidney", "liver", "testis", "ovary")
+
+# Label forebrain as brain, and hindbrain as cerebellum
+TPM_metadata <- TPM_metadata %>%
+  mutate(Organ = case_when(
+    Organ == "hindbrain" ~ "cerebellum",  # relabels “Hindbrain” as “Cerebellum”.
+    Organ == "forebrain" ~ "brain",  # relabels “Forebrain” as “Brain”.
+    TRUE ~ Organ  # ensures other values in the Organ column remain unchanged
+  )) %>%
+  mutate(
+    Organ = factor(Organ, levels = organ_order),  # Convert Organ to a factor with the correct order
+  ) %>%
+  arrange(Organ, Stage, Age_in_Weeks)
+
+# View the metadata
+style_kable(TPM_metadata[1:10,], caption="Multi-organ RNA-seq Metadata")
+```
+
+Display summaries of the dataset. 
+
+```{r Summaraize TPM metadata}
+# Summarize the metadata
+summary_metadata_organ <- TPM_metadata %>%
+  group_by(Organ) %>%
+  summarise(Count = n(), .groups = 'drop') %>%
+  arrange(desc(Count)) %>%
+  # Use tibble::add_row() to append a total row with the sum of counts
+  add_row(Organ = "Total", Count = sum(.$Count))
+
+summary_metadata_stage <- TPM_metadata %>%
+  group_by(Stage) %>%
+  summarise(
+    Count = n(),
+    Donors = n_distinct(Donor),
+    Age_Weeks = round(mean(Age_in_Weeks), 0),
+    .groups = 'drop'
+  ) %>%
+  arrange(Stage) %>%
+  # Calculate the total number of unique donors across all stages
+  add_row(Stage = "Total", 
+          Count = sum(.$Count), 
+          Donors = TPM_metadata %>% summarise(TotalDonors = n_distinct(Donor)) %>% pull(TotalDonors))
+
+# Display the counts as a table
+style_kable(summary_metadata_organ, caption = "Developmental time series counts by organ")
+style_kable(summary_metadata_stage, caption = "Developmental time series counts by development stage")
+```
+
+## Read in normalized expression levels
+
+Normalized expression levels of lncRNAs calculated from this time series, expressed as transcripts per million (TPM), were obtained from the publicly accessible LncExpDB database (available at lncRNA Expression Database).
+
+>Li Z, Liu L, Jiang S, Li Q, Feng C, Du Q, Zou D, Xiao J, Zhang Z, Ma L. LncExpDB: an expression database of human long non-coding RNAs. Nucleic Acids Res. 2021 Jan 8;49(D1):D962-D968. doi: 10.1093/nar/gkaa850. PMID: 33045751; PMCID: PMC7778919.
+
+https://ngdc.cncb.ac.cn/lncexpdb/downloads
+
+ftp://download.big.ac.cn/lncexpdb/2-OrganDevelopment/1-E-MTAB-6814//expression_profiles_E-MTAB-6814.tar.gz
+
+TPM normalized data for the developmental time series was extracted from the expression level file above and renamed `lncExpDB_E-MTABGeneTPM.tsv` in the `PublicData` folder. This script reads in a matrix of Transcripts Per Million (TPM) values from a TSV file, processes the data to ensure the column headers are correctly formatted, and converts the data into a tibble for easier manipulation in R.
+
+```{r Read in lncExpDB resource}
+# Specify the data directory and file path
+dir_path <- "PublicData"
+
+# Ream in TPM data and fix column header
+TPM <- read_tsv(
+  file.path(dir_path, "lncExpDB_E-MTABGeneTPM.tsv"),
+  show_col_types = FALSE
+)
+names(TPM)[1] <- "gene_id"
+
+# Reorder the columns in TPM to match the order of samples
+# Select gene_id first, then reorder the remaining columns based on sample_order
+TPM <- TPM %>%
+  dplyr::select(gene_id, all_of(TPM_metadata$Sample))
+
+# Create a gene type column, indicating whether the gene is a lncRNA or a protein coding gene
+TPM <- TPM %>%
+  mutate(gene_type = ifelse(grepl("^HSALNG", gene_id), "lncRNA", "protein")) %>%
+  dplyr::select(gene_id, gene_type, everything())
+
+# Summarize gene types
+summary_tpm_gene <- TPM %>%
+  group_by(gene_type) %>%
+  summarise(Count = n(), .groups = 'drop') %>%
+  arrange(desc(Count)) %>%
+  # Use tibble::add_row() to append a total row with the sum of counts
+  add_row(gene_type = "Total", Count = sum(.$Count))
+style_kable(summary_tpm_gene, caption = "Genes by type in TPM matrix")
+
+# Display the first few rows of the CCVM data as a nicely formatted table
+style_kable(TPM[1:5,1:10], caption = "Summary of the first few rows of the RNA-seq data")
+```
+
+
+## Data preprocessing
+
+This script removes rows where the maximum gene expression is less than 1 across all samples, using the apply() function to calculate the maximum expression for each gene and then filter out those rows. A threshold of a TPM value of 1 is typically employed in RNA-seq analysis.
+
+```{r}
+# Function to filter TPM data and log the number of genes removed
+filter_low_expression_genes <- function(TPM_data, threshold = 1, samples = NULL) {
+  
+  # If specific samples are provided, filter the data to include only those samples
+  if (!is.null(samples)) {
+    filtered_TPM_data <- TPM_data %>% dplyr::select(gene_id, all_of(samples))
+  } else {
+    filtered_TPM_data <- TPM_data
+  }
+  
+  # Calculate the maximum expression for each gene across the selected samples
+  max_expression <- apply(filtered_TPM_data[ , -c(1:2)], 1, max)  # Exclude the first two columns (gene_id and gene_type)
+  
+  # Identify genes to remove (those with max expression < threshold)
+  genes_to_remove <- sum(max_expression < threshold)
+  
+  # Filter the TPM data to keep only genes with max expression >= threshold
+  filtered_TPM <- TPM_data[max_expression >= threshold, ]
+  
+  # Log the number of genes removed
+  logMessage(paste0(genes_to_remove, " genes were removed due to low expression (max < ", threshold, ")."))
+  logMessage(paste0(nrow(filtered_TPM), " genes remain."))
+  
+  return(filtered_TPM)
+}
+```
+
+As in Lu et al, 2023, we will filter the TPM values to only include the genes that are expressed in the heart (i.e., for any given gene, an expression value >=1 in any of the 50 heart samples is required).
+
+```{r filter on genes expressed in the heart}
+# Create a list of heart samples
+heart_samples <- TPM_metadata %>%
+  filter(Organ == "heart") %>%
+  pull(Sample)
+
+# Create list of lncRNA coding genes
+TPM_lnc <- TPM %>%
+  filter(gene_type == "lncRNA")
+
+# Create a list of TPM values filtered for lncRNA expression in any tissue
+TPM_lnc_filtered_all <- filter_low_expression_genes(TPM_lnc)  
+
+# Create a list of TPM values filtered for lncRNA expression in the heart
+TPM_lnc_filtered <- filter_low_expression_genes(TPM_lnc_filtered_all,
+                                                samples = heart_samples)
+
+# Create list of protein coding genes, expressed in ANY tissue
+TPM_prot <- TPM %>%
+  filter(gene_type == "protein")
+TPM_prot_filtered <- filter_low_expression_genes(TPM_prot)
+
+# Count lncRNA and protein-coding genes
+lncRNA_count <- sum(str_detect(TPM_lnc_filtered$gene_id, "^HSALNG"))
+protein_coding_count <- sum(str_detect(TPM_prot_filtered$gene_id, "^ENSG"))
+logMessage(paste0("Remaining lncRNA genes expressed in the heart: ", lncRNA_count))
+logMessage(paste0("Remaining protein-coding genes expressed in any tissue: ", protein_coding_count))
+```
+
+
+# CNV data
+
+Read in the final CCVM CNV table with lncRNAs from Script 1A. The islated CHD CNV data frame (`CNV_iso`) contains all the CNVs that contain lncRNAs is a column called "lncRNA_genes". There may be a single gene, or many genes in a list delimted with "; ", i.e., "HSALNG0122847; HSALNG0122849; HSALNG0122850".
+
+```{r}
+# Read in RDS data frame from script 1A
+CNV_iso <- readRDS("Results/Penaloza_lncRNA_CCVM_hg38_liftover.rds")
+style_kable(head(CNV_iso, 1),caption="Final CNV table")
+CNV_lncRNA_count <- sum(CNV_iso$lncRNA_count != 0)
+CNV_no_lncRNA_count <- sum(CNV_iso$lncRNA_count == 0)
+logMessage(paste0("CNV-lncRNA regions: ", CNV_lncRNA_count))
+logMessage(paste0("CNVs without lncRNA: ", CNV_no_lncRNA_count))
+
+# Split the lncRNA_genes column into individual lncRNA genes
+CNV_LNC <- CNV_iso %>%
+  # Separate lncRNA genes into individual rows
+  separate_rows(lncRNA_genes, sep = "; ") %>%
+  # Filter out any NA values
+  filter(!is.na(lncRNA_genes)) %>%
+  # Pull out the lncRNA genes into a vector
+  pull(lncRNA_genes)
+CNV_LNC_distinct <- unique(CNV_LNC)
+
+# Print the counts of total and unique CNV-lncRNAs
+logMessage(paste0("There are ", length(CNV_LNC), " CNV-lncRNAs, consisting of ",
+                  length(CNV_LNC_distinct), " total unique lncRNAs"))
+```
+
+Filter the TPM_lnc_filtered dataset to only include the lncRNAs that are impacted by a CNV (i.e., those that are present in the CNV_LNC_distinct list)
+
+```{r}
+# Filter the TPM_lnc_filtered to include only lncRNAs impacted by a CNV
+TPM_lnc_CNV_filtered <- TPM_lnc_filtered %>%
+  filter(gene_id %in% CNV_LNC_distinct)
+
+# Display the filtered dataset
+logMessage(paste0("Of the ", nrow(TPM_lnc_filtered), " lncRNAs expressed in the heart, ",
+                  nrow(TPM_lnc_CNV_filtered), " are impacted by a CNV."))
+
+# Merge the final TPM data
+TPM_filtered <- bind_rows(TPM_lnc_CNV_filtered, TPM_prot_filtered)
+logMessage(paste0("The final gene set consisted of ",
+                  format(nrow(TPM_filtered), big.mark = ","), " total gene, of which ",
+                  format(sum(TPM_filtered$gene_type == "lncRNA"), big.mark = ","), " are lncRNAs and ",
+                  format(sum(TPM_filtered$gene_type == "protein"), big.mark = ","), 
+                  " are protein coding genes."))
+```
+
+## Final summary of expressed CNV-lncRNA
+
+Add columns to CNV data for expressed lncRNAs. Create table of summary merics. 
+
+```{r}
+# Function to filter lncRNA genes within a CNV
+filter_CNV_lncRNAs <- function(lncRNA_list, expressed_lncRNAs) {
+  # Split the delimited list into individual lncRNAs
+  lncRNA_vector <- unlist(strsplit(lncRNA_list, "; "))
+  
+  # Filter the lncRNAs to include only those in the expressed list
+  matching_lncRNAs <- lncRNA_vector[lncRNA_vector %in% expressed_lncRNAs]
+  
+  # Return the matching lncRNAs as a delimited string and the count
+  list(
+    CNV_lncRNA_genes = paste(matching_lncRNAs, collapse = "; "),
+    CNV_lncRNA_count = length(matching_lncRNAs)
+  )
+}
+
+# Apply the function to each row in the CNV_iso data table
+CNV_iso <- CNV_iso %>%
+  rowwise() %>%
+  mutate(
+    result = list(filter_CNV_lncRNAs(lncRNA_genes, TPM_lnc_CNV_filtered$gene_id)),
+    expressed_lncRNA_genes = result$CNV_lncRNA_genes,
+    expressed_lncRNA_count = result$CNV_lncRNA_count
+  ) %>%
+  dplyr::select(-result)  # Remove the temporary 'result' column
+
+# Save the tibble as a tab-delimited text file
+write_delim(CNV_iso, "Results/Penaloza_expressed_lncRNA_CCVM_hg38_liftover.txt", delim = "\t")
+
+# Save the tibble to an RDS file
+saveRDS(CNV_iso, file = "Results/Penaloza_expressed_lncRNA_CCVM_hg38_liftover.rds")
+
+# Calculate some summary metrics
+num_cnvs <- nrow(CNV_iso)
+unique_expressed_lncrna_gene_count <- length(unique(
+  unlist(strsplit(CNV_iso$expressed_lncRNA_genes, ";\\s*"))))
+
+# Create the summary tibble using rbind
+summary_final_data <- rbind(
+  tibble(Metric = "Patients", 
+         Count = length(unique(CNV_iso$ID))),
+  tibble(Metric = "CNVs", 
+         Count = length(unique(CNV_iso$INDEX))),
+  tibble(Metric = "Patients with CNVs without expressed lncRNAs", 
+         Count = length(unique(CNV_iso$ID[CNV_iso$expressed_lncRNA_count == 0]))),
+  tibble(Metric = "CNVs without expressed lncRNAs", 
+         Count = sum(CNV_iso$expressed_lncRNA_count == 0, na.rm = TRUE)),
+  tibble(Metric = "Patients with CNVs overlapping 1 or more expressed lncRNAs", 
+         Count = length(unique(CNV_iso$ID[CNV_iso$expressed_lncRNA_count > 0]))),
+  tibble(Metric = "CNVs overlapping 1 or more expressed lncRNAs",
+         Count = sum(CNV_iso$expressed_lncRNA_count>0, na.rm = TRUE)),
+  tibble(Metric = "Median number of expressed lncRNAs per CNV", 
+         Count = median(CNV_iso$expressed_lncRNA_count, na.rm = TRUE)),
+  tibble(Metric = "Mean number of expressed lncRNAs per CNV", 
+         Count = round(mean(CNV_iso$expressed_lncRNA_count, na.rm = TRUE),0)),
+  tibble(Metric = "IQR of expressed lncRNAs per CNV", 
+         Count = round(IQR(CNV_iso$expressed_lncRNA_count, na.rm = TRUE),0)),
+  tibble(Metric = "Maximum number of expressed lncRNAs in a CNV", 
+         Count = max(CNV_iso$expressed_lncRNA_count, na.rm = TRUE)),
+  tibble(Metric = "Number of unique expressed lncRNA genes", 
+         Count = format(unique_expressed_lncrna_gene_count, big.mark = ","))
+)
+
+# Print the transposed tibble
+style_kable(summary_final_data, 
+            caption ="Summary of Final CHD Cohort and impacted lncRNAs expressed in the heart")
+```
+
+## Plot the distribution of expressed lncRNAs within the CNVs.
+
+This script visualizes the distribution of expressed lncRNA counts within CNVs by creating a histogram (*Supplemental Firgure 4*). The lncRNA counts are first binned, with zero counts handled separately. A histogram is then generated, showing the frequency of CNVs with different numbers of overlapping lncRNAs. The plot is customized with specific colors, axis breaks, and styling to enhance readability. The final plot is saved as a high-quality PDF file and displayed within the R Markdown document.
+
+```{r Plot Intersection of CNV and lncRNA}
+# Create a histogram showing the distribution of lncRNA counts within CNVs
+FigS4 <- ggplot(CNV_iso, aes(x = expressed_lncRNA_count)) +
+  geom_histogram(binwidth = 5, boundary = 0.01, 
+                 color = "white", fill = "steelblue", alpha = 0.8) +  # Adjusted binwidth and colors
+  scale_y_continuous(expand = c(0, 0)) +  # Remove space between plot and axis
+  labs(
+    x = "Number of expressed lncRNAs per CNV",
+    y = "Frequency",
+    title = "Distribution of expressed lncRNAs within CNVs",
+  ) +
+  theme_minimal(base_size = 14) +  # Set a base size for all text
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold",
+                              size = 16, margin = margin(b = 10)),  # Center and bold title with margin
+    axis.title = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 12),
+    axis.ticks = element_line(color = "black", linewidth = 0.5),  # Add tick marks
+    axis.ticks.length = unit(0.25, "cm"),  # Length of tick marks
+    panel.grid.major = element_blank(),  # Remove major gridlines
+    panel.grid.minor = element_blank(),  # Remove minor gridlines
+    panel.background = element_rect(fill = "white", colour = NA),
+    axis.line = element_line(color = "black", linewidth = 0.5),  # Use linewidth instead of size
+    plot.margin = unit(c(1, 1, 1, 1), "cm")  # Add margin around the plot
+  )
+
+# Save the plot as a high-quality PDF
+ggsave("Figures/Figure_S4_CNV_expressed_lncRNA_overlap_count_histogram.pdf", 
+       plot = FigS4,
+       width = 8.5, height = 6, units = "in", dpi = 300, device = cairo_pdf)
+
+# Display the histogram
+print(FigS4)
+```
+
+>*Supplemental Figure 4: Distribution of Expressed lncRNA Counts Within CNVs.* This histogram illustrates the distribution of the number of expressed CNV-lncRNAs in the CCVM study cohort. Expression was determined by a TPM value >=1 in any of the 50 heart samples from the developmental time series RNA-seq data. CNVs are grouped into bins based on the number of overlapping lncRNAs, with zero counts handled separately. The x-axis represents the number of lncRNAs per CNV, while the y-axis shows the frequency of CNVs in each bin. The plot highlights the prevalence of CNVs with varying levels of lncRNA involvement
+
+## Venn diagram of expressed lncRNAs and CNV-lnRNA
+
+```{r}
+# Define lncRNA genes to create Venn diagram
+all_expressed_lncRNA <- TPM_lnc_filtered_all$gene_id  # Label: "Expressed lncRNAs"
+heart_expressed_lncRNA <- TPM_lnc_filtered$gene_id  # Label: "Heart lncRNAs"
+cnv_lncRNA <- CNV_LNC_distinct  # Label: "CNV lncRNAs"
+
+# Create the data for the Euler diagram
+venn_counts <- c(
+  "Expressed lncRNAs" = length(all_expressed_lncRNA),
+  "Heart lncRNAs" = length(heart_expressed_lncRNA),
+  "CNV lncRNAs" = length(cnv_lncRNA),
+  "Expressed lncRNAs&Heart lncRNAs" = length(heart_expressed_lncRNA),  # Heart is fully within Expressed
+  "Expressed lncRNAs&CNV lncRNAs" = length(intersect(all_expressed_lncRNA, cnv_lncRNA)),
+  "Heart lncRNAs&CNV lncRNAs" = length(intersect(heart_expressed_lncRNA, cnv_lncRNA)),
+  "Expressed lncRNAs&Heart lncRNAs&CNV lncRNAs" = length(intersect(heart_expressed_lncRNA, cnv_lncRNA))
+)
+
+fit <- euler(
+  venn_counts,
+  input = "union",
+  shape = "ellipse"
+)
+
+# Save the Venn diagram as a Cairo PDF
+cairo_pdf("Figures/Figure_2E_lncRNA_Venn_diagram.pdf", 
+    width = 8, height = 8)
+
+Fig2E <- plot(fit,
+     fills = list(fill = c("blue", "red", "green"), alpha = 0.6),
+     edges = list(col = "black"),
+     labels = list(font = 2),
+     quantities = TRUE)
+
+print(Fig2E)
+
+# Close the PDF device
+dev.off()
+```
+
+>*Figure 2E. Venn diagram of expressed lncRNAs and CNV-associated lncRNAs.* This Venn diagram illustrates the overlap between three categories of long non-coding RNAs (lncRNAs) in the study cohort: expressed lncRNAs (blue), heart-expressed lncRNAs (red), and CNV-associated lncRNAs (green). The overlap regions indicate the number of lncRNAs shared between these categories, with heart-expressed lncRNAs being a subset of the total expressed lncRNAs. Quantities are displayed for each intersection, highlighting the relationship between CNV-associated lncRNAs and the lncRNAs expressed in the heart and across the entire dataset.
+
+# WGCNA analysis
+
+Using the CCVM data, we will follow a similar approach to Lu et al., 2023.
+
+> Lu Y, Fang Q, Qi M, Li X, Zhang X, Lin Y, Xiang Y, Fu Q, Wang B. Copy number variation-associated lncRNAs may contribute to the etiologies of congenital heart disease. Commun Biol. 2023 Feb 17;6(1):189. doi: 10.1038/s42003-023-04565-z. PMID: 36806749; PMCID: PMC9938258.
+
+https://doi.org/10.1038/s42003-023-04565-z
+
+
+## STEP 1 Topological Overlap Matrix (TOM)
+
+The first step in the WGCNA (Weighted Gene Co-expression Network Analysis) workflow involves the construction of a Topological Overlap Matrix (TOM), which is a key component for identifying modules of co-expressed genes. The TOM is derived from the initial gene expression data, and it measures the similarity between genes not just based on their direct connections, but also by considering the shared connections they have with other genes in the network. This approach is more robust than simple pairwise correlation, as it accounts for the broader network context, making the TOM a powerful tool for identifying meaningful gene modules. By capturing both direct and indirect interactions between genes, the TOM helps to highlight tightly connected groups of genes that are likely to be co-regulated or involved in the same biological processes. This matrix forms the foundation for subsequent steps in WGCNA, where gene modules are detected and related to external traits.
+
+
+### Step 1A: Hyperbolic arcsine transformation for RNA-seq data
+
+Hyperbolic Arcsine (asinh) Transformation, asinh(x), is often used for RNA-seq data because it stabilizes variance, handles zeros naturally, and can be applied to non-negative data, making it particularly suitable for TPM values. This is a standard transformation in many statistical and bioinformatics applications, and is reccomended for constructing gene coexpression networks from RNA-seq analysis.
+
+> Johnson KA, Krishnan A. Robust normalization and transformation techniques for constructing gene coexpression networks from RNA-seq data. Genome Biol. 2022 Jan 3;23(1):1. doi: 10.1186/s13059-021-02568-9. PMID: 34980209; PMCID: PMC8721966.
+
+```{r}
+# Define a function for the hyperbolic arcsine (asinh) transformation
+asinh_transform <- function(x) {
+  log(x + sqrt(x^2 + 1))
+}
+
+# Apply the asinh_transform function to all TPM value columns
+TPM_transformed <- TPM_filtered %>%
+  mutate(across(-c(gene_id, gene_type), asinh_transform))
+
+# Quick box plot to show the transformed TPM data
+TPM_transformed %>%
+  dplyr::select(1:10) %>%
+  pivot_longer(cols=-c(gene_id,gene_type),names_to="sample",values_to="TPM") %>%
+  dplyr::filter(TPM>1) %>%
+  ggplot(aes(x=sample,y=TPM)) +
+  ylab("asinh(TPM)") +
+  theme_bw() +
+  geom_boxplot()  + coord_flip()
+```
+
+### Step 1B: Transpose TPM data
+
+To prepare your data for WGCNA, you need to transpose the data so that genes (or other features) become columns and samples become rows. After transposing, the gene_id column will typically be set as the column names.
+
+```{r}
+# Step 1: Remove gene_id and gene_type from the data for transposition
+data_for_transpose <- TPM_transformed %>%
+  dplyr::select(-gene_type)
+
+# Step 2: Transpose the data
+TPM_transposed <- as.data.frame(t(data_for_transpose[,-1]))  # Exclude the first column (gene_id)
+
+# Step 3: Set the column names to the gene_id values
+colnames(TPM_transposed) <- data_for_transpose$gene_id
+```
+
+### Step 1C: Secondary QC check
+
+The goodSamplesGenes function from the WGCNA package is used to identify and filter out samples and genes that are problematic due to too many missing values or constant expression levels. 
+
+```{r}
+gsg <- goodSamplesGenes(TPM_transposed)
+print(summary(gsg))
+```
+
+All genes passed!
+
+### Step 1D: Module Detection and Network Analysis
+
+This step involves evaluating a range of powers to find the one that achieves the desired scale-free topology with  R^2 \geq 0.80. WGCNA will automatically use the registered parallel backend.
+
+```{r}
+# Step 1: Choose a set of soft-thresholding powers
+powers <- c(1:20, seq(22, 30, by = 2))
+
+# Step 2: Call the network topology analysis function
+sft <- pickSoftThreshold(TPM_transposed, 
+                         powerVector = powers, 
+                         verbose = 5,
+                         networkType = "unsigned") # Option indicates that the network does not distinguish between positive and negative correlations
+
+
+# Step 3: Prepare data for plotting
+sft.data <- data.frame(Power = sft$fitIndices[, 1],
+                       SFT.R.sq = -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+                       Mean.Connectivity = sft$fitIndices[, 5])
+
+style_kable(sft.data, caption ="Soft-Thresholding Power Analysis for WGCNA")
+
+# Plot 1: Scale-Free Topology Model Fit (R^2)
+g1 <- ggplot(sft.data, aes(x = Power, y = SFT.R.sq, label = Power)) +
+  geom_point(color = "blue") +
+  geom_text_repel(nudge_y = 0.05, color = "red") +
+  geom_hline(yintercept = 0.80, color = "red", linetype = "dashed") +
+  labs(title = "Scale Independence",
+       x = "Soft Threshold (power)",
+       y = "Scale Free Topology Model Fit, signed R^2") +
+  theme(
+    text = element_text(family = "Helvetica", size = 14),  # Apply Helvetica font family to all text
+    plot.title = element_text(hjust = 0.5, face = "bold",
+                              size = 16, margin = margin(b = 10)),  # Center and bold title with margin
+    axis.title = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 12),
+    axis.ticks = element_line(color = "black", linewidth = 0.5),  # Add tick marks
+    axis.ticks.length = unit(0.25, "cm"),  # Length of tick marks
+    panel.background = element_rect(fill = "white", colour = NA),
+    axis.line = element_line(color = "black", linewidth = 0.5), 
+    panel.grid.major = element_line(color = "lightgray", linetype = "dotted"),
+    panel.grid.minor = element_line(color = "lightgray", linetype = "dotted"),
+    plot.margin = unit(c(1, 1, 1, 1), "cm")  # Add margin around the plot
+  )
+
+# Plot 2: Mean Connectivity
+g2 <- ggplot(sft.data, aes(x = Power, y = Mean.Connectivity, label = Power)) +
+  geom_point(color = "blue") +
+  geom_text_repel(nudge_y = 0.4, color = "red") +
+  labs(title = "Mean Connectivity",
+       x = "Soft Threshold (power)",
+       y = "Mean Connectivity") +
+  theme(
+    text = element_text(family = "Helvetica", size = 14),  # Apply Helvetica font family to all text
+    plot.title = element_text(hjust = 0.5, face = "bold",
+                              size = 16, margin = margin(b = 10)),  # Center and bold title with margin
+    axis.title = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 12),
+    axis.ticks = element_line(color = "black", linewidth = 0.5),  # Add tick marks
+    axis.ticks.length = unit(0.25, "cm"),  # Length of tick marks
+    panel.background = element_rect(fill = "white", colour = NA),
+    axis.line = element_line(color = "black", linewidth = 0.5),
+    panel.grid.major = element_line(color = "lightgray", linetype = "dotted"),
+    panel.grid.minor = element_line(color = "lightgray", linetype = "dotted"),
+    plot.margin = unit(c(1, 1, 1, 1), "cm")  # Add margin around the plot
+  )
+
+# Step 5: Save the combined plot as a Cairo PDF on a letter-size page
+CairoPDF(file = "Figures/Figure_S5_WGCNA_Power_Analysis.pdf",
+         width = 8.5, height = 11)  # Letter size in portrait orientation
+
+# Step 6: Combine and print the two plots onto a single page
+combined_plot <- grid.arrange(g1, g2, ncol = 1)
+dev.off()
+print(combined_plot)
+```
+
+>*Supplemental Figure 5: Selection of Soft-Thresholding Power for WGCNA Network Construction.* (A) Scale Independence Plot: This plot shows the scale-free topology model fit (R²) as a function of the soft-thresholding power. The red dashed line indicates the threshold of R² = 0.80, which is typically considered sufficient for achieving a scale-free network. Each point represents the R² value for a corresponding power, with the selected power highlighted. (B) Mean Connectivity Plot: This plot displays the mean connectivity of the network as a function of the soft-thresholding power. Mean connectivity represents the average number of connections each node has to other nodes. The selected power is chosen to balance a high R² value with reasonable network connectivity, ensuring that the network is both scale-free and sufficiently connected.
+
+### Step 1E: Calculating the TOM similarity matrix
+
+The next step in the WGCNA process is to calculate the Topological Overlap Matrix (TOM) from the given expression data. The TOM is a measure of similarity between genes based on their network connection patterns, which is more robust to noise than direct adjacency measures.
+
+```{r TOM similarity matrix}
+# Detect the number of cores on your machine
+numCores <- detectCores() - 2 
+enableWGCNAThreads(numCores)
+
+# Calculate the TOM similarity matrix directly from expression data
+TOM = TOMsimilarityFromExpr(TPM_transposed,
+                            power = 9,
+                            networkType="unsigned", #  specifies that the network does not distinguish between positive and negative correlations.
+                            nThreads=numCores)  # specify the number of threads for parallel processing, max 20
+
+# Set row and column names of the TOM matrix to match the gene names
+rownames(TOM) <- colnames(TPM_transposed)
+colnames(TOM) <- colnames(TPM_transposed)
+
+# Convert TOM to Dissimilarity
+dissTOM = 1-TOM 
+
+# Disable threading
+disableWGCNAThreads()
+```
+
+Note: Depending on your system, different approaches to parallelization may be needed. Function below is an example of an alternative strategy.
+
+```{r Register parallel backend}
+# library(foreach)
+# library(doParallel)
+# 
+# # Set up a parallel backend. After registering the parallel backend, any code using %dopar% will run in parallel. 
+# # Detect the number of cores on your machine
+# numCores <- detectCores() -1 
+# 
+# # Create a cluster using the available cores
+# cl <- makeCluster(numCores)
+# 
+# # Register the parallel backend
+# registerDoParallel(cl)
+# 
+# # Check that the backend is registered
+# getDoParWorkers()
+# 
+# # stop the cluster after the parallel processing is done:
+# stopCluster(cl)
+# registerDoSEQ()
+# getDoParWorkers()
+```
+
+
+## STEP 2: Hierarchical Clustering of TOM dissimilarity matrix
+
+This step organizes genes into a hierarchical tree (dendrogram) based on the TOM dissimilarity matrix.
+
+```{r WGCNA Hierarchical Clustering}
+# Perform hierarchical clustering using the dissimilarity TOM
+geneTree <- hclust(as.dist(dissTOM), method = "average")
+```
+
+### Step 2A: Module Identification with Dynamic Tree Cut
+
+Initial gene modules, or groups of co-expressed genes, are identified using the dynamic tree cut method, which segments the hierarchical tree into distinct branches representing different modules. The cutreeDynamic function in WGCNA is used to identify gene modules from a hierarchical clustering tree. This function takes the dendrogram and the dissimilarity matrix (often 1 - TOM) and dynamically cuts the tree to identify modules based on specified parameters (e.g., deepSplit, minClusterSize).
+
+It offers different methods for cutting the tree into modules, with the two primary options being "tree" and "hybrid". The "tree" method is faster and simpler, making it suitable for straightforward hierarchical clustering tasks. However, the "hybrid" method, which is the default in WGCNA, offers greater flexibility and robustness, especially in complex datasets where a strict hierarchical approach might miss important relationships. For most applications, the "hybrid" method is recommended unless you have specific reasons to prefer the "tree" method.
+
+After identifying these initial modules, you may find that some modules are very similar to each other. To simplify the network and avoid redundancy, you can merge these similar modules using functions like mergeCloseModules. This step helps refine the module structure by combining closely related modules into a single module.
+
+```{r WGCNA dynamic tree cutting}
+# Perform dynamic tree cutting to identify modules
+dynamicMods = cutreeDynamic(
+  dendro = geneTree,           # Hierarchical clustering tree (dendrogram) of genes
+  distM = dissTOM,             # Dissimilarity matrix (typically 1 - TOM)
+  deepSplit = 2,               # Controls sensitivity to splitting; higher values result in more, smaller modules
+  method = "hybrid",           # Combines hierarchical clustering with PAM for more flexible module detection
+  pamRespectsDendro = FALSE,   # Allows PAM to reassign genes even if it contradicts the dendrogram
+  minClusterSize = 30          # Minimum number of genes for a module; smaller clusters are merged with others
+)
+
+# Number of modules detected
+numModules <- length(table(dynamicMods))
+cat("Number of modules detected:", numModules, "\n")
+
+# Size of each module
+moduleSizes <- table(dynamicMods)
+print("Size of each module:")
+print(moduleSizes)
+
+# Convert numeric module labels to colors for easy interpretation
+dynamicColors <- labels2colors(dynamicMods)
+
+# Add numeric labels with leading zeros (e.g., "003" instead of "3")
+mod_number_with_zeros <- sprintf("%03d", dynamicMods)
+
+# Combine gene IDs with their corresponding module labels
+gene_module_assignment <- tibble(
+  gene_id = rownames(dissTOM),               # Gene identifiers from dissTOM
+  module_number = dynamicMods,               # Module numbers from cutreeDynamic
+  module_id = paste0("ME", mod_number_with_zeros),
+  module_color = dynamicColors               # Module colors from labels2colors
+)
+
+# Create the color_guide tibble with distinct rows based on module_number, module_id, and module_color
+color_guide <- gene_module_assignment %>%
+  dplyr::select(module_number, module_id, module_color) %>%  # Select relevant columns
+  distinct()  # Keep only distinct rows
+
+# View the resulting tibble
+head(gene_module_assignment)
+
+# Plot the dendrogram with module colors
+CairoPDF(file = "Figures/Figure_S6_WGCNA_Gene_Clustering_TOM_Dissimilarity.pdf",
+         width = 8.5, height = 11)  # Letter size in landscape orientation
+plotDendroAndColors(geneTree, 
+                    dynamicColors, 
+                    main = "Gene Clustering on TOM-based Dissimilarity",
+                    sub = "Module Assignment Based on Dynamic Tree Cut",
+                    dendroLabels = FALSE, 
+                    hang = 0.03,
+                    addGuide = TRUE, 
+                    guideHang = 0.05)
+dev.off()
+```
+
+>*Supplemental Figure 6: Gene Dendrogram and Module Assignment Based on Dynamic Tree Cut.* The dendrogram represents the hierarchical clustering of genes based on the Topological Overlap Matrix (TOM)-based dissimilarity measure. Each branch of the dendrogram corresponds to a group of genes with similar expression patterns. Below the dendrogram, the dynamic tree-cut method has been applied to identify distinct gene modules represented by different colors. Each color indicates a module, a cluster of co-expressed genes, and potentially functionally related genes. The vertical guidelines indicate the modules detected by the dynamic tree-cut method, with the height of the dendrogram reflecting the dissimilarity between genes. This visualization helps to identify and interpret the modular organization of the gene co-expression network.
+
+### Step 2B: Calculate Module Eigengenes
+
+Once modules have been identified using the TOM-based clustering, the moduleEigengenes function is used to calculate the module eigengenes. Module eigengenes represent the first principal component of each module and serve as a summary profile for the module. They are often used to relate modules to external traits. This function summarizes the expression data of all genes within each module by computing the first principal component (the module eigengene). This eigengene represents the main expression trend of the module across all samples.
+
+```{r}
+# Calculate module eigengenes
+MEList <- moduleEigengenes(TPM_transposed, colors = dynamicColors)
+MEs <- MEList$eigengenes
+```
+
+### Step 2C: Calculate Dissimilarity of Module Eigengenes:
+
+Next, calculate the dissimilarity between these module eigengenes and perform hierarchical clustering on them.
+
+```{r}
+# Calculate dissimilarity of module eigengenes
+MEDiss <- 1 - WGCNA::cor(MEs)
+
+# Cluster module eigengenes
+METree <- hclust(as.dist(MEDiss), method = "average")
+
+# Convert the hierarchical clustering object to a dendrogram
+METree_dendro <- as.dendrogram(METree)
+
+# Convert the dendrogram to a data frame for ggplot2
+METree_data <- dendro_data(METree_dendro)
+
+# Calculate the number of modules before merging
+numModulesBefore <- length(unique(dynamicColors))
+numModulesBeforeCaption = paste0("Number of modules before merging: ", numModulesBefore)
+logMessage(numModulesBeforeCaption)
+
+# Choose a height cut-off to merge similar modules
+mergeCutHeight <- 0.1  # Example cut height; adjust based on your data
+
+# Create the dendrogram plot using ggplot2
+FigS7A <- ggplot(METree_data$segments) +
+  geom_segment(aes(x = x, y = y, xend = xend, yend = yend)) +
+  geom_hline(yintercept = mergeCutHeight, linetype = "dashed", color = "red") +  # Add cut height line
+  labs(title = "Clustering of Module Eigengenes (before merge)",
+       subtitle = numModulesBeforeCaption,
+       x = "Module", 
+       y = "Dissimilarity") +
+  theme(
+    text = element_text(family = "Helvetica", size = 14),  # Apply Helvetica font family to all text
+    plot.title = element_text(hjust = 0.5, face = "bold",
+                              size = 16, margin = margin(b = 10)),  # Center and bold title with margin
+    plot.subtitle = element_text(hjust = 0.5, size = 14, face = "italic", margin = margin(b = 10)),  # Customize subtitle
+axis.title = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 12),
+    axis.ticks = element_line(color = "black", linewidth = 0.5),  # Add tick marks
+    axis.ticks.length = unit(0.25, "cm"),  # Length of tick marks
+    panel.background = element_rect(fill = "white", colour = NA),
+    axis.line = element_line(color = "black", linewidth = 0.5),
+    plot.margin = unit(c(1, 1, 1, 1), "cm")  # Add margin around the plot
+  )
+
+plot(FigS7A)
+```
+
+
+### Step 2D. Merge Similar Modules (Optional):
+
+If you identify highly similar modules in the dendrogram, you can merge them.
+
+```{r}
+# Inspect FigS7A and choose a height cut-off to merge similar modules
+mergeCutHeight <- 0.1
+
+# Merge similar modules
+mergedModules <- mergeCloseModules(TPM_transposed, 
+                                   dynamicColors, 
+                                   cutHeight = mergeCutHeight, 
+                                   verbose = 3)
+
+# Update module colors and eigengenes
+mergedColors <- mergedModules$colors
+mergedMEs <- mergedModules$newMEs
+colnames(mergedMEs) <- substring(colnames(mergedMEs), 3)
+
+# Combine gene IDs with their corresponding module labels
+gene_module_assignment_merged <- tibble(
+  gene_id = colnames(TPM_transposed),        # Gene identifiers from TPM
+  module_color = mergedColors                # Module colors from mergedModules
+)
+
+# Calculate dissimilarity of the merged module eigengenes
+MEDiss_merged <- 1 - WGCNA::cor(mergedMEs)
+
+# Cluster the merged module eigengenes
+METree_merged <- hclust(as.dist(MEDiss_merged), method = "average")
+
+# Convert the hierarchical clustering object to a dendrogram
+METree_dendro_merged <- as.dendrogram(METree_merged)
+
+# Convert the dendrogram to a data frame for ggplot2
+METree_data_merged <- dendro_data(METree_dendro_merged)
+
+# Calculate the number of modules before merging
+numModulesAfter <- length(unique(mergedColors))
+numModulesAfterCaption = paste0("Number of modules after merging: ", numModulesAfter)
+logMessage(numModulesAfterCaption)
+
+# Create the dendrogram plot using ggplot2
+FigS7B <- ggplot(METree_data_merged$segments) +
+  geom_segment(aes(x = x, y = y, xend = xend, yend = yend)) +
+  geom_hline(yintercept = mergeCutHeight, linetype = "dashed", color = "red") +  # Add cut height line
+  labs(title = "Clustering of Module Eigengenes (after merge)",
+       subtitle = numModulesAfterCaption,
+       x = "Module", 
+       y = "Dissimilarity") +
+  theme(
+    text = element_text(family = "Helvetica", size = 14),  # Apply Helvetica font family to all text
+    plot.title = element_text(hjust = 0.5, face = "bold",
+                              size = 16, margin = margin(b = 10)),  # Center and bold title with margin
+    plot.subtitle = element_text(hjust = 0.5, size = 14, face = "italic", margin = margin(b = 10)),  # Customize subtitle
+axis.title = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 12),
+    axis.ticks = element_line(color = "black", linewidth = 0.5),  # Add tick marks
+    axis.ticks.length = unit(0.25, "cm"),  # Length of tick marks
+    panel.background = element_rect(fill = "white", colour = NA),
+    axis.line = element_line(color = "black", linewidth = 0.5),
+    plot.margin = unit(c(1, 1, 1, 1), "cm")  # Add margin around the plot
+  )
+
+plot(FigS7B)
+
+# Step 6: Combine and print the two plots onto a single page
+combined_plot_s7 <- grid.arrange(FigS7A, FigS7B, ncol = 1)
+
+# Save the plot as a high-quality PDF
+ggsave("Figures/Figure_S7_Clustering_of_Module_Eigengenes.pdf", 
+       plot = combined_plot_s7,
+       width = 8.5, height = 11, units = "in", dpi = 300, device = cairo_pdf)
+```
+
+>*Supplemental Figure 7: Hierarchical Clustering of Module Eigengenes Before and After Merging.* (A) Clustering of Module Eigengenes Before Merging: The dendrogram shows the hierarchical clustering of module eigengenes based on their dissimilarity, calculated as 1 - correlation. The red dashed line represents the cut height (0.1) used to identify similar modules to be merged. Before merging, there are 53 distinct modules. (B) Clustering of Module Eigengenes After Merging: The dendrogram shows the hierarchical clustering of the module eigengenes after merging similar modules. After merging, the number of distinct modules is reduced to 40. This demonstrates how closely related modules have been combined to simplify the network while preserving key relationships.
+
+
+### Step 2E: Order the Module Eigengenes by Hierarchical Clustering:
+
+orderMEs orders the module eigengenes based on their similarity, helping to group related modules together. The code then standardizes the column names by removing the “ME” prefix, matching the columns to a color guide, and reassigning names based on module numbers.
+
+```{r}
+# Order the module eigengenes by hierarchical clustering
+MEs_ordered <- orderMEs(mergedMEs)
+
+# Generate a new color_guide for merged modules
+color_guide_merged <- tibble(
+  module_number = seq(1, ncol(MEs_ordered)),
+  module_id = paste0("ME", sprintf("%02d", seq(1, ncol(MEs_ordered)))),
+  module_color = colnames(MEs_ordered),  # Colors after merging
+) %>%
+  mutate(module_color = factor(module_color, levels = module_color))
+```
+
+
+### Step 2F: Compile Gene Annotation Information
+
+Prepare data for functional enrichment analysis by mapping gene identifiers and associating them with their corresponding module colors. The gconvert Function, from the gProfiler toolset, is used to convert gene identifiers. It supports mapping gene IDs from various databases (e.g., Ensembl) to more common gene symbols or other formats.
+
+```{r}
+# Select only the 'gene_id' and 'gene_type' columns from TPM_transformed
+TPM_gene_type <- TPM_transformed %>% dplyr::select(gene_id, gene_type)
+
+# Map Gene Identifiers
+gene_table <- gconvert(query=c(gsub("\\..*", "", TPM_gene_type$gene_id)),
+                       organism="hsapiens", target="ENSG", filter_na=FALSE)
+
+# Use cbind to combine the original gene_id with the gene_info data
+gene_info <- as_tibble(cbind(TPM_gene_type, gene_table))
+
+# Replace NA values in gene names with the input gene identifiers
+gene_info <- gene_info %>%
+  mutate(gene_symbol = coalesce(name, input)) %>%
+  dplyr::select(gene_id, input, gene_symbol, gene_type) %>%
+  dplyr::rename(gene_accession = input)
+
+# Select relevant columns and bind module color information
+gene_info <- gene_info %>% 
+  left_join(gene_module_assignment_merged, by = "gene_id") %>%
+  left_join(color_guide_merged, by = "module_color") %>%
+  mutate(color_rgb = col2hex(module_color))
+```
+
+The CHDgene website (https://chdgene.victorchang.edu.au) is an online resource created for clinicians and researchers who are interested in the genetics of Congenital Heart Disease (CHD). CHDgene currently contains a list of high-confidence CHD genes. Variants in these genes have reproducibly been shown to cause CHD in humans.
+
+>Yang A, Alankarage D, Cuny H, Ip EKK, Almog M, Lu J, Das D, Enriquez A, Szot JO, Humphreys DT, Blue GM, Ho JWK,Winlaw DS, Dunwoodie SL, Giannoulatou E, CHDgene: a curated database for congenital heart disease genes, Circulation: Genomic and Precision Medicine 2022
+
+We will annotate our gene list with the list of 142 known CHD genes downloaded from the CHDgene website.
+
+Note: 141 of the 142 CHD genes are in the TPM data (GDF1 is not)
+
+```{r}
+# Specify the data directory and file path
+dir_path <- "PublicData"
+
+# Define the file path
+file_path <- file.path(dir_path, "chdgene_table.csv")
+
+# Read the CSV file, select specific columns, and rename them
+chd_gene_list <- read_csv(file_path, show_col_types = FALSE) %>%
+  pull(Gene)
+
+# Add column for CHD gene to gene_info table
+gene_info <- gene_info %>% 
+  mutate(chd_gene = gene_symbol %in% chd_gene_list)
+
+# Display the first few rows of the gene_info data frame
+head(gene_info %>% filter(str_detect(gene_id, "^ENSG")))
+```
+
+### Step 2G: Statistical analysis of lncRNA, protein-coding and CHD genes in each merged module
+
+This code counts the occurrences of each unique value in mergedColors, which corresponds to the number of genes in each module.
+
+	1.	Hypergeometric Distribution:
+	•	Purpose: The hypergeometric test assesses the probability of observing a specific number of a certain type of gene (e.g., lncRNA) in a module, given the total number of that gene type across all modules.
+	•	When to Use: Use this test when you want to assess the enrichment of a specific gene type in a module compared to all other modules.
+	2.	Fisher’s Exact Test:
+	•	Purpose: Fisher’s exact test is used to determine if there are nonrandom associations between two categorical variables—in this case, module membership and gene type (lncRNA, protein-coding, CHD gene).
+	•	When to Use: Use this test when your data can be organized into a 2x2 contingency table and you want to test for enrichment or depletion of a specific gene type in a module.
+
+
+```{r}
+# Create the summary table
+geneCounts <- gene_info %>%
+  group_by(module_color) %>%
+  summarise(
+    num_genes = n(),
+    lncRNA_count = sum(gene_type == "lncRNA"),
+    protein_count = sum(gene_type == "protein"),
+    chd_gene_count = sum(chd_gene == TRUE)
+  )
+
+# Total number of genes in the dataset
+total_genes <- sum(geneCounts$num_genes)
+
+# Total counts across all modules for each category
+total_lncRNA <- sum(geneCounts$lncRNA_count)
+total_protein <- sum(geneCounts$protein_count)
+total_chd_gene <- sum(geneCounts$chd_gene_count)
+
+# Applying hypergeometric test to each module with correct arguments
+geneCountsEnrichment <- geneCounts %>%
+  rowwise() %>%
+  mutate(
+    # Hypergeometric p-value for lncRNA enrichment  - phyper(q, m, n, k)
+    lncRNA_hyper_p = phyper(lncRNA_count - 1,    # The number of observed lncRNAs in the module, minus one to account for the cumulative probability. i.e., the number white balls drawn from the urn (q)
+                            total_lncRNA,   # The total number of lncRNAs across all modules (total successes in the population). i.e., the number of white balls in the urn (m)
+                            total_genes - total_lncRNA,   # The total number of non-lncRNAs in the dataset (total failures in the population). i.e., the number of black balls in the urn (n)
+                            num_genes,  # The total number of genes in the specific module being tested. i.e., the number of balls drawn from the urn (k)
+                            lower.tail = FALSE),
+    
+    # Hypergeometric p-value for protein-coding genes
+    protein_hyper_p = phyper(protein_count - 1, 
+                             total_protein, 
+                             total_genes - total_protein, 
+                             num_genes, 
+                             lower.tail = FALSE),
+    
+    # Hypergeometric p-value for CHD genes
+    chd_gene_hyper_p = phyper(chd_gene_count - 1, 
+                              total_chd_gene, 
+                              total_genes - total_chd_gene, 
+                              num_genes, 
+                              lower.tail = FALSE),
+    
+    # Fisher's exact test for lncRNA enrichment/depletion, stored as a list
+    lncRNA_fisher_test = list({
+      contingency_table <- matrix(c(
+        lncRNA_count, total_lncRNA - lncRNA_count,
+        num_genes - lncRNA_count, total_genes - total_lncRNA - (num_genes - lncRNA_count)
+      ), nrow = 2)
+      fisher.test(contingency_table)
+    }),
+    
+    # Fisher's exact test for protein-coding genes enrichment/depletion, stored as a list
+    protein_fisher_test = list({
+      contingency_table <- matrix(c(
+        protein_count, total_protein - protein_count,
+        num_genes - protein_count, total_genes - total_protein - (num_genes - protein_count)
+      ), nrow = 2)
+      fisher.test(contingency_table)
+    }),
+    
+    # Fisher's exact test for CHD genes enrichment/depletion, stored as a list
+    chd_gene_fisher_test = list({
+      contingency_table <- matrix(c(
+        chd_gene_count, total_chd_gene - chd_gene_count,
+        num_genes - chd_gene_count, total_genes - total_chd_gene - (num_genes - chd_gene_count)
+      ), nrow = 2)
+      fisher.test(contingency_table)
+    })
+  ) %>%
+  ungroup()
+
+# Extracting p-values and odds ratios, and correcting for multiple testing
+geneCountsEnrichment <- geneCountsEnrichment %>%
+  mutate(
+    lncRNA_fisher_p = map_dbl(lncRNA_fisher_test, "p.value"),
+    protein_fisher_p = map_dbl(protein_fisher_test, "p.value"),
+    chd_gene_fisher_p = map_dbl(chd_gene_fisher_test, "p.value"),
+    lncRNA_odds_ratio = map_dbl(lncRNA_fisher_test, "estimate"),
+    protein_odds_ratio = map_dbl(protein_fisher_test, "estimate"),
+    chd_gene_odds_ratio = map_dbl(chd_gene_fisher_test, "estimate")
+  ) %>%
+  mutate(
+    lncRNA_fisher_p_adj = p.adjust(lncRNA_fisher_p, method = "BH"),
+    protein_fisher_p_adj = p.adjust(protein_fisher_p, method = "BH"),
+    chd_gene_fisher_p_adj = p.adjust(chd_gene_fisher_p, method = "BH")
+  ) %>%
+  mutate(
+    lncRNA_enrichment = ifelse(lncRNA_hyper_p > 0.05 & lncRNA_fisher_p_adj > 0.05,
+                               "Not Significant",
+                               ifelse(lncRNA_odds_ratio > 1, "Enriched", "Depleted")),
+    protein_enrichment = ifelse(protein_hyper_p > 0.05 & protein_fisher_p_adj > 0.05,
+                                "Not Significant",
+                                ifelse(protein_odds_ratio > 1, "Enriched", "Depleted")),
+    chd_gene_enrichment = ifelse(chd_gene_hyper_p > 0.05 & chd_gene_fisher_p_adj > 0.05,
+                                 "Not Significant",
+                                 ifelse(chd_gene_odds_ratio > 1, "Enriched", "Depleted"))
+  ) %>%
+  dplyr::select(-lncRNA_fisher_test, -protein_fisher_test, -chd_gene_fisher_test)
+
+# Export results to Excel
+color_guide_merged_enrichment <- color_guide_merged %>%
+  left_join(geneCountsEnrichment, by = "module_color")
+supplementalTables <- list("TableS1" = color_guide_merged_enrichment)
+
+# Print merged module results
+color_guide_merged <- color_guide_merged %>%
+  left_join(geneCounts, by = "module_color")
+style_kable(color_guide_merged, "Merged Modules and Gene Counts")
+```
+
+
+## STEP 3: Identify Modules Correlated to Organ Traits
+
+The next stage is to correlate the module eigengenes with external phenotypic traits to identify modules that are associated with specific biological conditions or phenotypes.
+
+### Step 3A: Prepare the Organ Data
+
+Create a binary matrix where each column represents one of our seven organs from the developmental time series (e.g., heart, brain, liver), and each row corresponds to a sample. The matrix should contain 1 if the sample belongs to that tissue and 0 otherwise.
+
+```{r}
+# Convert the 'Organ' column to a binary matrix
+traitData <- as.data.frame(model.matrix(~ Organ - 1, data = TPM_metadata))
+
+# Remove the "Organ" prefix from the column names
+colnames(traitData) <- sub("^Organ", "", colnames(traitData))
+
+# Make sure the row order of tissueData matches the order of samples in MEs
+rownames(traitData) <- TPM_metadata$Sample
+
+# Ensure the row names of trait match those of mergedMEs
+traitData <- traitData[rownames(mergedMEs), , drop = FALSE]
+
+# Create a table of Ogran counts to verify data
+style_kable(as.data.frame(colSums(traitData)))
+```
+
+### Step 3B: Identify Tissue-Specific Modules
+
+Modules with high correlation to a particular tissue can be considered specific to that tissue. Calculate the correlation between the module eigengenes and the binary tissue matrix.
+
+These modules are identified as being specifically expressed in the heart tissue compared to other tissues. They may represent genes that are uniquely or predominantly active in heart tissue.
+
+Identifying hub genes in these modules can help you understand the key drivers of heart-specific functions and processes. These hub genes might be critical for what makes heart tissue distinct from other tissues, or may identify genes that are specifically involved in heart tissue development or function.
+
+```{r}
+# Check if the row names of MEs_ordered and traitData match and are in the same order
+if (!identical(rownames(MEs_ordered), rownames(traitData))) {
+  stop("The row names (sample identifiers) of MEs_ordered and traitData do not match or are not in the same order.")
+}
+
+# Correlate module eigengenes with the organ trait
+moduleTraitCor <- WGCNA::cor(MEs_ordered,
+                             traitData,
+                             use = "p",  # pairwise.complete.obs, handles missing values
+                             method="pearson"
+                             )
+
+# Calculate p-values for these correlations
+moduleTraitPvalue <- corPvalueStudent(moduleTraitCor, nrow(MEs_ordered))
+
+# Convert correlation matrix to a long format for easier merging
+moduleTraitCor_long <- as.data.frame(moduleTraitCor) %>%
+  rownames_to_column(var = "module_color") %>%
+  pivot_longer(cols = -module_color, names_to = "Organ", values_to = "Correlation")
+
+# Convert p-value matrix to a long format for easier merging
+moduleTraitPvalue_long <- as.data.frame(moduleTraitPvalue) %>%
+  rownames_to_column(var = "module_color") %>%
+  pivot_longer(cols = -module_color, names_to = "Organ", values_to = "PValue")
+
+# Merge the correlation data with color_guide_merged
+merged_results_organ <- color_guide_merged %>%
+  left_join(moduleTraitCor_long, by = "module_color") %>%
+  left_join(moduleTraitPvalue_long, by = c("module_color", "Organ"))
+
+# View the first few rows of the merged results
+head(merged_results_organ)
+
+# Save the merged results to the supplemental tables list
+supplementalTables$TableS2 <- merged_results_organ
+```
+
+### Step 3C: Visualization of organ eigengene module heatmap
+
+This heatmap will show the correlation between each module eigengene and organ, with the color intensity reflecting the strength and direction of the correlation.
+
+```{r}
+# Step 1: Create a list of color names corresponding to the module numbers
+color_order <- match(rownames(moduleTraitCor), colnames(MEs_ordered))
+yLabels <- paste0("ME", colnames(MEs_ordered))
+ySymbols <- paste0("[", color_guide_merged$num_genes, "] ",
+                   color_guide_merged$module_id[color_order])
+
+# Step 2: Define the conditions for displaying the correlation and p-values
+display_condition <- abs(moduleTraitCor) >= 0.2 & moduleTraitPvalue <= 0.05
+
+# Create the text matrix based on the condition
+textMatrix <- ifelse(display_condition,
+                     paste0(signif(moduleTraitCor, 2),
+                            " (", 
+                            signif(moduleTraitPvalue, 1), 
+                            ")"),
+                     "")
+dim(textMatrix) <- dim(moduleTraitCor)
+
+# Assign row and column names to the textMatrix
+rownames(textMatrix) <- rownames(moduleTraitCor)  # Module names (e.g., from MEs)
+colnames(textMatrix) <- colnames(moduleTraitCor)  # Organ names (e.g., from traitData)
+
+# Step 3: Open a Cairo PDF device with a defined page size
+CairoPDF(file = "Figures/Figure_3_Module_Organ_Relationships.pdf", 
+         width = 8.5, height = 11)
+
+# Set the margins in inches using par(mar = ...)
+# mar = c(bottom, left, top, right) - note that these are in lines, not inches
+# Typically, setting a margin of about 0.5 inches is equivalent to 5 lines
+par(mar = c(6, 10, 3, 3))
+
+# Step 4: Plot the heatmap using labeledHeatmap
+labeledHeatmap(Matrix = moduleTraitCor,
+               xLabels = colnames(moduleTraitCor),
+               yLabels = yLabels,
+               ySymbols = ySymbols,
+               colorLabels = FALSE,
+               colors = blueWhiteRed(50),
+               textMatrix = textMatrix,
+               setStdMargins = FALSE,
+               cex.text = 0.5,
+               zlim = c(-1,1))
+
+# Step 5: Close the PDF device
+dev.off()
+
+logMessage(paste0("There are ", nrow(moduleTraitCor), " merged modules across ",
+       ncol(moduleTraitCor), " tissues."))
+```
+
+>*Figure 3. Module-Tissue Association Heatmap Across Seven Organ Systems.* This heatmap helps identify gene modules critical for the development and function of specific tissues. It illustrates the correlation between the modules identified by WGCNA and the different tissue types across the developmental time series. Each row represents a module eigengene, color-coded according to the original module colors prefixed by “ME,” while each column corresponds to a specific tissue. Positive correlations are depicted in red, negative correlations in blue, and white indicates no correlation. The color intensity reflects the strength of the correlation, with numerical values in each cell displaying the correlation coefficient, followed by the p-value in parentheses for statistical significance. Only significant correlations (p < 0.001) are shown. Modules with high positive or negative correlations (> |0.6|) are considered tissue-specific, highlighting potential tissue-specific gene expression patterns. Module ME03 (magenta) notably shows the highest positive correlation (R = 0.95) with heart tissue, suggesting a strong link to heart development and function. 
+
+### Step 3D: Plot Eigengene Dendrogram and Adjacency Heatmap
+
+Generate visualizations to explore the relationships between module eigengenes in the context of organ-specific modules, providing insights into how the modules are related to each other across different organs.
+
+Eigengene Dendrogram: The first plot is a dendrogram that visualizes the hierarchical clustering of module eigengenes. This dendrogram helps identify which modules have similar expression patterns across the organs.
+
+Eigengene Adjacency Heatmap: The second plot is a heatmap that shows the pairwise correlations between the module eigengenes. This heatmap allows us to visually assess the strength and direction of the relationships between the modules across the organs.
+
+```{r}
+# Check if the row names of MEs_ordered and Heart.dat match and are in the same order
+if (!identical(rownames(MEs_ordered), rownames(traitData))) {
+  stop("The row names (sample identifiers) of MEs_ordered and traitData do not match or are not in the same order.")
+}
+
+# Combine and order the module eigengenes with the heart trait
+organMEs <- cbind(traitData, MEs_ordered)
+
+# Created ordered module eigengenes
+METorgans <- orderMEs(organMEs)
+
+# Plot the eigengene dendrogram
+CairoPDF(file = "Figures/Figure_S8_Module_Organ_Eigengene_Dendrogram.pdf", 
+         width = 11, height = 8.5)
+par(mar = c(5, 5, 5, 5))  # mar = c(bottom, left, top, right) 
+par(cex = 1.0)  # Set the character expansion for the plot
+plotEigengeneNetworks(METorgans, "Eigengene Dendrogram", 
+                      marDendro = c(0, 4, 2, 0),
+                      plotHeatmaps = FALSE)
+dev.off()
+
+# Plot the eigengene adjacency heatmap
+CairoPDF(file = "Figures/Figure_S9_Module_Organ_Eigengene_Adjacency_heatmap.pdf", 
+         width = 8.5, height = 8.5)
+par(mar = c(5, 10, 5, 5))  # mar = c(bottom, left, top, right) 
+par(cex = 1.0)
+plotEigengeneNetworks(METorgans, "Eigengene Adjacency Heatmap",
+                      marHeatmap = c(10, 10, 1, 2),
+                      plotDendrograms = FALSE, xLabelsAngle = 90)
+dev.off()
+```
+
+>*Supplemental Figure 8: Module Eigengene Dendrogram for Organ-Specific Modules.* This dendrogram illustrates the hierarchical clustering of module eigengenes across different organs. Each branch represents a module eigengene, and the clustering reflects the similarity in expression patterns between the modules. Modules that are closely related are grouped together on the dendrogram, indicating that they have similar expression profiles across the organs. This visualization helps to identify which modules are most closely associated with each other, and to which organs (bold), providing insights into potential shared biological functions or co-regulated gene sets across different tissues. The clustering of the magenta module (ME03) and the heart is highlighted by color.
+
+>*Supplemental Figure 9: Module Eigengene Adjacency Heatmap for Organ-Specific Modules.* This heatmap displays the pairwise correlations between module eigengenes across different organs, with color intensity reflecting the strength and direction of the correlation. Positive correlations are shown in red, indicating that the modules have similar expression patterns, while negative correlations are shown in blue, indicating opposing expression patterns. The heatmap allows for a visual comparison of how closely related the modules are regarding their expression across various organs, highlighting potential tissue-specific modules or those co-expressed in multiple tissues.
+
+
+## STEP 4: Identify Modules Corelated to Heart
+
+In this step, modules are ranked based on their correlation with the heart trait. Modules with the highest absolute correlations are prioritized, as they are likely to be most relevant to heart physiology. These modules may not be exclusive to the heart but are highly indicative of key processes within heart tissue.
+
+By ordering the modules in this way, we can focus on those most strongly associated with the heart trait, making them prime candidates for further investigation. Within each module, genes are sorted by their significance to the heart trait, helping to identify key genes—often referred to as hub genes—that are central to the module’s function.
+
+Identifying these hub genes is crucial, as they are often the primary regulators of important biological processes, potentially linking them to heart development, disease mechanisms, or responses to physiological stress. This approach is vital for understanding the molecular mechanisms underlying specific heart traits, such as heart disease, hypertrophy, or other conditions.
+
+### Step 4A: Ordering Modules by Correlation with the Heart Trait
+
+```{r}
+# Select heart train column
+Heart.dat <- traitData %>% 
+  dplyr::select(heart)
+
+# Ensure the row names of Heart.dat match those of mergedMEs
+Heart.dat <- Heart.dat[rownames(mergedMEs), , drop = FALSE]
+```
+
+### Step 4B: Ordering Modules by Correlation with the Heart Trait
+
+Repeat correlation of Step 3, just using the heart trait (data would be the same as selecting the heart column from the moduleTraitCor table above)
+
+```{r}
+# Calculate correlation between each module eigengene and the heart trait
+moduleHeartCor <- WGCNA::cor(MEs_ordered, Heart.dat, use = "p") 
+moduleHeartPValue <- corPvalueStudent(moduleHeartCor, nrow(MEs_ordered))
+
+# Combine the results into a table
+heartCorResults <- tibble(
+  module_color = rownames(moduleHeartCor),
+  Correlation = as.numeric(moduleHeartCor),
+  PValue = as.numeric(moduleHeartPValue)
+) 
+
+# Merge the correlation data with color_guide_merged
+merged_results_heart <- color_guide_merged %>%
+  left_join(heartCorResults, by = "module_color") %>%
+  arrange(desc(abs(Correlation))) %>%  # Sort by absolute correlation in descending order
+  mutate(module_color = factor(module_color, levels = module_color))  # Convert to factor based on the sorted order
+
+# View the first few rows of the merged results
+head(merged_results_heart)
+
+# Save the merged results to the supplemental tables list
+supplementalTables$TableS3 <- merged_results_heart
+```
+
+### Step 4C: Visualization of heart eigengene module heatmap
+
+This heatmap will show the correlation between each module eigengene and organ, with the color intensity reflecting the strength and direction of the correlation (Note: this will be identical to the first column of the Figure in step 3).
+
+```{r}
+# Step 1: Create a list of color names corresponding to the module numbers
+color_order <- match(rownames(moduleHeartCor), colnames(MEs_ordered))
+yLabels <- paste0("ME",colnames(MEs_ordered))
+ySymbols <- paste0("[", color_guide_merged$num_genes[color_order], "] ",
+                   color_guide_merged$module_id[color_order])
+
+# Step 2: Define the conditions for displaying the correlation and p-values
+display_condition <- abs(moduleHeartCor) >= 0.2 & moduleHeartPValue <= 0.05
+
+# Create the text matrix based on the condition
+textMatrix <- ifelse(display_condition,
+                     paste0(signif(moduleHeartCor, 2),
+                            " (", 
+                            signif(moduleHeartPValue, 1), 
+                            ")"),
+                     "")
+dim(textMatrix) <- dim(moduleHeartCor)
+
+# Assign row and column names to the textMatrix
+rownames(textMatrix) <- rownames(moduleHeartCor)  # Module names (e.g., from MEs)
+colnames(textMatrix) <- colnames(moduleHeartCor)  # Organ names (e.g., from traitData)
+
+# Step 3: Open a Cairo PDF device with a defined page size
+CairoPDF(file = "Figures/Figure_S10_Module_Heart_Relationships.pdf", 
+         width = 5, height = 11.5)
+par(mar = c(5, 10, 5, 5))  # mar = c(bottom, left, top, right) 
+
+# Step 4: Create a labeled heatmap
+labeledHeatmap(
+  Matrix = moduleHeartCor,
+  xLabels = "Heart",
+  yLabels = yLabels,
+  ySymbols = ySymbols,
+  colorLabels = TRUE,  # Enable color-coded labels
+  colors = blueWhiteRed(50),
+  textMatrix = textMatrix,  # Add the text matrix with R^2 and p-values
+  main = "Modules Highly Correlated\nwith the Heart",
+  setStdMargins = FALSE,
+  cex.text = 0.8,
+  zlim = c(-1, 1)
+)
+
+# Close the PDF device
+dev.off()
+```
+
+>*Supplemental Figure 10: Correlation Between Module Eigengenes and Heart Trait.* This heatmap visualizes the correlation between each module eigengene and the heart trait, with the color intensity reflecting both the strength and direction of the correlation. Each row represents a module eigengene, and the single column corresponds to the heart trait. The color labels on the y-axis indicate the module colors, providing a clear visual connection to the modules identified in earlier steps. The values within each cell display the correlation coefficient (R) and the corresponding p-value, with stronger correlations and more significant p-values highlighted by more intense colors. Modules with high positive correlations (in red) are positively associated with the heart trait, while those with high negative correlations (in blue) are negatively associated. This figure helps to identify which modules are most relevant to heart tissue function, guiding further investigation into the biological significance of these modules.
+
+### Step 4D: Plot Eigengene Dendrogram and Adjacency Heatmap
+
+A dendrogram can show the hierarchical clustering of module eigengenes based on their correlations.
+
+The code orders the module eigengenes in mergedMEs and the heart trait (Heart.dat) to explore their relationships. This combined data (MET) is used to assess how the heart trait aligns with each module eigengene.
+
+```{r}
+# Check if the row names of MEs_ordered and Heart.dat match and are in the same order
+if (!identical(rownames(MEs_ordered), rownames(Heart.dat))) {
+  stop("The row names (sample identifiers) of MEs_ordered and traitData do not match or are not in the same order.")
+}
+
+# Combine and order the module eigengenes with the heart trait
+heartMEs <- cbind(Heart.dat, MEs_ordered)
+
+# Created ordered module eigengenes
+METheart <- orderMEs(heartMEs)
+
+# Plot the eigengene dendrogram
+CairoPDF(file = "Figures/Figure_S11_Module_Heart_Eigengene_Dendrogram.pdf", 
+         width = 11, height = 8.5)
+par(mar = c(5, 5, 5, 5))  # mar = c(bottom, left, top, right) 
+par(cex = 1.0)  # Set the character expansion for the plot
+plotEigengeneNetworks(METheart, "Eigengene Dendrogram", marDendro = c(0, 4, 2, 0),
+                      plotHeatmaps = FALSE)
+dev.off()
+
+# Plot the eigengene adjacency heatmap
+CairoPDF(file = "Figures/Figure_S12_Module_Heart_Eigengene_Adjacency_heatmap.pdf", 
+         width = 8.5, height = 8.5)
+par(mar = c(5, 10, 5, 5))  # mar = c(bottom, left, top, right) 
+par(cex = 1.0)
+plotEigengeneNetworks(METheart, "Eigengene Adjacency Heatmap", marHeatmap = c(10, 10, 1, 2),
+                      plotDendrograms = FALSE, xLabelsAngle = 90)
+dev.off()
+```
+
+>*Supplemental Figure 11: Module Eigengene Dendrogram for Heart-Specific Correlations.* This dendrogram shows the hierarchical clustering of module eigengenes and the heart trait. Each branch in the dendrogram represents a module eigengene or the heart trait, with the clustering reflecting the similarity in expression patterns. Modules closely related in their expression across the heart trait are grouped together, highlighting potential co-regulation or shared functional pathways within heart tissue. This visualization aids in identifying which modules are most strongly associated with the heart trait, offering insights into the molecular networks that may drive heart-specific functions or conditions.
+
+>*Supplemental Figure 12: Module Eigengene Adjacency Heatmap for Heart-Specific Correlations.* This heatmap presents the pairwise correlations between module eigengenes and the heart trait, with color intensity representing the strength and direction of the correlations. Positive correlations are depicted in red, indicating modules with expression patterns that are positively associated with the heart trait, while negative correlations are shown in blue. The heatmap provides a detailed view of the relationships between modules in the context of the heart trait, allowing for the identification of modules that may be key regulators or indicators of heart-specific processes. This figure is essential for pinpointing modules with strong heart associations, guiding further analysis of their biological significance in heart tissue.
+
+## STEP 5: Identify Modules Correlated with Age in Heart Samples:
+
+Treating the developmental stages as a continuous time series (using the Age_in_Weeks variable) is a powerful approach to model the relationship between module eigengenes and the continuous variable developmental age, which represents the progression from conception to adulthood. This approach allows will capture trends and correlations over time, rather than just between categorical stages.
+
+### Step 5A: Subset to Heart Samples:
+
+```{r}
+# Extract age metadata
+stageData <- as.data.frame(TPM_metadata$Age_in_Weeks,
+                           row.names = TPM_metadata$Sample)
+
+# Subset the data to include only heart samples
+heart_samples <- TPM_metadata %>% filter(Organ == "heart") %>% pull(Sample)
+
+# Subset mergedMEs and Age_in_Weeks to include only the heart samples
+heart_MEs <- mergedMEs[heart_samples, ]
+heart_Age <- stageData[heart_samples, , drop = FALSE]
+```
+
+### Step 5B: Correlate Module Eigengenes with Age in Heart Samples
+
+```{r}
+# Check if the row names of mergedMEs and TPM_transposed match and are in the same order
+if (!identical(rownames(heart_MEs), rownames(heart_Age))) {
+  stop("The row names (sample identifiers) of MEs_ordered and stageData do not match or are not in the same order.")
+}
+
+# Correlate module eigengenes with the continuous age variable in heart samples
+heart_moduleAgeCor <- WGCNA::cor(heart_MEs, heart_Age, use = "p")
+
+# Calculate p-values for these correlations
+heart_moduleAgePvalue <- corPvalueStudent(heart_moduleAgeCor, nrow(heart_MEs))
+
+# Combine the results into a table
+merged_results_heart_age <- tibble(
+  module_color = rownames(heart_moduleAgeCor),
+  Correlation = as.numeric(heart_moduleAgeCor),
+  PValue = as.numeric(heart_moduleAgePvalue)
+)
+
+# Order by the absolute value of the correlation and join to merged module info
+merged_results_heart_age <- color_guide_merged %>%
+  left_join(merged_results_heart_age, by = "module_color") %>%
+  arrange(desc(abs(Correlation)), PValue) %>%  # Sort by absolute correlation in descending order
+  mutate(module_color = factor(module_color, levels = module_color))  # Convert to factor based on the sorted order
+
+# View the top results
+head(merged_results_heart_age)
+
+# Save the merged results to the supplemental tables list
+supplementalTables$TableS4 <- merged_results_heart_age
+```
+
+### Step 5C: Visualization of developmental stage heatmap
+
+This heatmap will show the correlation between each module eigengene and developmental age, with the color intensity reflecting the strength and direction of the correlation.
+
+```{r}
+# Step 1: Create a list of color names corresponding to the module numbers
+color_order <- match(rownames(heart_moduleAgeCor), color_guide_merged$module_color)
+yLabels <- paste0("ME",rownames(heart_moduleAgeCor))
+ySymbols <- paste0("[", color_guide_merged$num_genes[color_order], "] ",
+                   color_guide_merged$module_id[color_order])
+
+# Step 2: Define the conditions for displaying the correlation and p-values
+display_condition <- abs(heart_moduleAgeCor) >= 0.2 & heart_moduleAgePvalue <= 0.05
+
+# Step 3: Create the text matrix based on the condition
+textMatrix <- ifelse(display_condition,
+                     paste0(signif(heart_moduleAgeCor, 2),
+                            " (", 
+                            signif(heart_moduleAgePvalue, 3), 
+                            ")"),
+                     "")
+dim(textMatrix) <- dim(heart_moduleAgeCor)
+
+# Step 4: Open a Cairo PDF device with a defined page size
+CairoPDF(file = "Figures/Figure_S13_Module_Heart_Age_Relationships.pdf", 
+         width = 5, height = 11.5)
+par(mar = c(5, 10, 5, 5))  # mar = c(bottom, left, top, right)
+
+# Step 5: Create a labeled heatmap
+labeledHeatmap(
+  Matrix = heart_moduleAgeCor,
+  xLabels = "Heart",
+  yLabels = yLabels,
+  ySymbols = ySymbols,
+  colorLabels = TRUE,  # Enable color-coded labels
+  colors = blueWhiteRed(50),
+  textMatrix = textMatrix,  # Add the text matrix with R^2 and p-values
+  main = "Modules Highly Correlated with\nHeart Developmental Stage",
+  setStdMargins = FALSE,
+  cex.text = 0.8,
+  zlim = c(-1, 1)
+)
+
+# Step 6: Close the PDF device
+dev.off()
+```
+
+>*Supplemental Figure 13: Correlation Between Module Eigengenes and Age in Heart Samples.* This heatmap illustrates the correlation between module eigengenes and age (in weeks) in heart samples, with color intensity reflecting the strength and direction of the correlation. Each row represents a module eigengene, and the single column corresponds to age in heart samples. The y-axis labels include the module name and the number of genes within each module, providing context for the size and identity of each module. Modules with correlation values (|R|) greater than or equal to 0.2 and p-values less than or equal to 0.05 have their correlation coefficients and p-values displayed within the heatmap cells. The color-coded labels on the y-axis correspond to the module colors, helping to link the modules to earlier steps in the analysis visually. Modules with high positive correlations (in red) indicate increasing expression with developmental stage, while negative correlations (in blue) suggest decreasing expression over time. This figure highlights the modules most strongly associated with heart development, identifying key gene networks involved in heart growth and maturation.
+
+### Step 5D: Plot Eigengene Dendrogram and Adjacency Heatmap
+
+A dendrogram can show the hierarchical clustering of module eigengenes based on their correlations. We will consider the samples age post conception in weeks, and create developmental stage grouping as follows:
+
+developmental stage in heart development:
+
+ * *Early Development (4–10 weeks post-conception)*: This stage involves the initial formation of the heart, including the heart tube, the onset of the heartbeat, and the development of primitive atria, ventricles, and outflow tracts.
+ * *Mid-Development (11–20 weeks post-conception)*: The heart undergoes structural refinement during this period, with the septation of chambers, development of the conduction system, and initiation of blood circulation.
+ * *Late Fetal Development (21–40 weeks post-conception)*: The heart continues to mature in preparation for birth, with muscle maturation, further development of the conduction system, and adaptation for postnatal circulation.
+ * *Perinatal Period (41–52 weeks post-conception)*: This stage encompasses the transition around birth, including the closure of fetal circulatory shunts and the final adaptation of the heart structure and function to adult-like circulation patterns.
+ * *Postnatal Development (1–5 years)*: After birth, the heart grows and adapts, with continued myocardial development and stabilization of adult-like function and structure.
+ * *Mature Heart (>5 years)*: The heart has reached full structural and functional maturity, maintaining function and adapting to physical and metabolic demands throughout adulthood.
+
+The code orders the module eigengenes in mergedMEs and the heart trait (Heart.dat) to explore their relationships. This combined data (MET) is used to assess how the heart trait aligns with each module eigengene.
+
+```{r}
+# Create a new variable for age groups
+TPM_metadata_heart <- TPM_metadata %>%
+  filter(Organ == "heart") %>%
+  mutate(Development_Stage = case_when(
+    Age_in_Weeks <= 10 ~ "Early Development",
+    Age_in_Weeks <= 20 ~ "Mid Development",
+    Age_in_Weeks <= 40 ~ "Late Fetal Development",
+    Age_in_Weeks <= 52 ~ "Perinatal Period",
+    Age_in_Weeks <= 260 ~ "Postnatal Development",  # Roughly up to 5 years
+    TRUE ~ "Mature Heart"
+  )) %>%
+  mutate(Development_Stage = factor(Development_Stage, 
+                                    levels = c("Early Development", 
+                                               "Mid Development", 
+                                               "Late Fetal Development", 
+                                               "Perinatal Period", 
+                                               "Postnatal Development", 
+                                               "Mature Heart")))
+
+# Convert the Age_Group variable to a binary matrix
+Age.dat <- as.data.frame(model.matrix(~ Development_Stage - 1,
+                                      data = TPM_metadata_heart))
+
+# Remove the "Organ" prefix from the column names
+colnames(Age.dat) <- sub("^Development_Stage", "", colnames(Age.dat))
+
+# Make sure the row order of tissueData matches the order of samples in MEs
+rownames(Age.dat) <- TPM_metadata_heart$Sample
+
+# Ensure the row names of Age.dat match those of heart_MEs
+Age.dat <- Age.dat[rownames(heart_MEs), , drop = FALSE]
+
+# Check if the row names of MEs_ordered and Heart.dat match and are in the same order
+if (!identical(rownames(heart_MEs), rownames(Age.dat))) {
+  stop("The row names (sample identifiers) of MEs_ordered and traitData do not match or are not in the same order.")
+}
+
+# Combine and order the module eigengenes with the heart trait
+ageMEs <- cbind(Age.dat, heart_MEs)
+
+# Created ordered module eigengenes
+METage <- orderMEs(ageMEs)
+
+
+# Plot the eigengene dendrogram
+CairoPDF(file = "Figures/Figure_S14_Module_Heart_Eigengene_Dendrogram.pdf", 
+         width = 11, height = 8.5)
+par(mar = c(5, 5, 5, 5))  # mar = c(bottom, left, top, right) 
+par(cex = 1.0)  # Set the character expansion for the plot
+plotEigengeneNetworks(METage, "Eigengene Dendrogram", 
+                      marDendro = c(0, 4, 2, 0),
+                      plotHeatmaps = FALSE)
+dev.off()
+
+# Plot the eigengene adjacency heatmap
+CairoPDF(file = "Figures/Figure_S15_Module_Heart_Eigengene_Adjacency_heatmap.pdf", 
+         width = 8.5, height = 8.5)
+par(mar = c(5, 10, 5, 5))  # mar = c(bottom, left, top, right) 
+par(cex = 0.8)
+plotEigengeneNetworks(METage, "Eigengene Adjacency Heatmap", 
+                      marHeatmap = c(10, 10, 1, 2),
+                      plotDendrograms = FALSE, xLabelsAngle = 90)
+dev.off()
+```
+
+>*Supplemental Figure 14: Module Eigengene Dendrogram for Heart Developmental Stages.* This dendrogram illustrates the hierarchical clustering of module eigengenes in heart samples, along with developmental stage groups. Each branch represents a module eigengene or a developmental stage, with the clustering reflecting the similarity in expression patterns across these stages. Modules closely related in their expression during heart development are grouped together, highlighting potential co-regulation or shared functional pathways. This visualization aids in identifying which modules are most strongly associated with specific stages of heart development, offering insights into the molecular networks that drive heart growth and maturation.
+
+>*Supplemental Figure 15: Module Eigengene Adjacency Heatmap for Heart Developmental Stages.* This heatmap presents the pairwise correlations between module eigengenes and developmental stages in heart samples. Color intensity reflects the strength and direction of the correlations, with red indicating positive correlations and blue indicating negative correlations. The heatmap allows for a visual comparison of how closely related the modules are regarding their expression patterns across different stages of heart development. This figure is crucial for pinpointing key modules correlated with specific stages of heart development, guiding further analysis of their biological significance in heart maturation and function.
+
+
+## STEP 6: Gene-level Analysis
+
+### Step 6A: Calculating Heart - Gene Significance:
+
+	•	geneTraitSignificance: Calculates the correlation between each gene’s expression (in TPM_transposed) and the heart trait (Heart.dat). This represents how strongly each gene’s expression is associated with the heart tissue.
+	•	GSPvalue: Calculates the p-values associated with the gene-trait significance correlations.
+
+```{r}
+# Check if the row names of Heart.dat and TPM_transposed match and are in the same order
+if (!identical(rownames(Heart.dat), rownames(TPM_transposed))) {
+  stop("The row names (sample identifiers) of MEs_ordered and traitData do not match or are not in the same order.")
+}
+
+# Calculate gene module membership and p-values
+geneHeartCor <- WGCNA::cor(TPM_transposed, Heart.dat, use = "p")
+geneHeartPvalue <- corPvalueStudent(geneHeartCor, nrow(Heart.dat))
+
+# Convert to tibbles and renames columns
+geneHeartCor <- geneHeartCor %>%
+  as_tibble(rownames = "gene_id") %>%
+  dplyr::rename(HeartGene.Cor = heart)
+geneHeartPvalue <- geneHeartPvalue %>%
+  as_tibble(rownames = "gene_id") %>%
+   dplyr::rename(HeartGene.PValue = heart)
+```
+
+### Step 6B: Calculating Gene - Module Membership
+
+	•	geneModuleMembership: Calculates the correlation between each gene’s expression (in TPM_transposed) and each module eigengene (in mergedMEs). This represents how well a gene belongs to a module, referred to as module membership (MM).
+	•	MMPvalue: Calculates the p-values associated with the module membership correlations using the corPvalueStudent function.
+	•	Renaming: The columns in geneModuleMembership and MMPvalue are renamed to indicate they represent module membership and the corresponding p-values for each module.
+
+```{r}
+# Check if the row names of mergedMEs and TPM_transposed match and are in the same order
+if (!identical(rownames(mergedMEs), rownames(TPM_transposed))) {
+  stop("The row names (sample identifiers) of MEs_ordered and traitData do not match or are not in the same order.")
+}
+
+# Calculate gene module membership and p-values
+geneModuleMembershipCor <- WGCNA::cor(TPM_transposed, mergedMEs, use = "p")
+geneModuleMembershipPvalue <- corPvalueStudent(geneModuleMembershipCor, nrow(mergedMEs))
+
+# Convert to tibbles and renames columns
+colnames(geneModuleMembershipCor) <- 
+  paste0("Module.Cor.", colnames(geneModuleMembershipCor))
+geneModuleMembershipCor <- geneModuleMembershipCor %>%
+  as_tibble(rownames = "gene_id")
+
+colnames(geneModuleMembershipPvalue) <- 
+  paste0("Module.PValue.", colnames(geneModuleMembershipPvalue))
+geneModuleMembershipPvalue <- geneModuleMembershipPvalue %>%
+  as_tibble(rownames = "gene_id")
+```
+
+
+### Step 6C: CHD Subtype Comparison
+
+For each gene, add details of which patients had CNCs impacting that gene. 
+
+```{r}
+# Step 1: Split the gene identifiers in CNV_iso and associate them with patient IDs and diagnoses
+cnv_genes <- CNV_iso %>%
+  dplyr::select(INDEX, ID, Diagnosis, lncbook_genes) %>%
+  separate_rows(lncbook_genes, sep = "; ")  # Split the delimited gene identifiers into separate rows
+
+# Step 2: Create a summary table to count patients and diagnoses for each gene
+gene_summary <- cnv_genes %>%
+  group_by(lncbook_genes) %>%
+  summarise(
+    CCVM_Patient = paste(unique(ID), collapse = "; "),  # List of patient IDs
+    CCVM_Patient_Count = n_distinct(ID),  # Count of unique patients
+    .groups = 'drop'
+  ) %>%
+  # Add counts of patients per diagnosis for each gene
+  left_join(
+    cnv_genes %>%
+      group_by(lncbook_genes, Diagnosis) %>%
+      summarise(Patient_Count = n_distinct(ID), .groups = 'drop') %>%
+      pivot_wider(names_from = Diagnosis, values_from = Patient_Count, values_fill = 0),
+    by = "lncbook_genes"
+  )
+
+# Step 3: Merge the summary information into gene_info_combined
+gene_info_combined <- gene_info %>%
+  left_join(gene_summary, by = c("gene_id" = "lncbook_genes"))
+```
+
+
+### Step 6D: Combining Module Membership and Gene Information
+
+Consolidates all relevant gene information into a single data frame for easier analysis:
+
+	•	Gene IDs: The identifiers of the genes.
+	•	Module Colors: The color label of the module to which each gene belongs.
+	•	Gene-Trait Significance: The correlation between each gene’s expression and the heart trait.
+	•	P-values: The p-values associated with the gene-trait correlations.
+
+```{r}
+# Join the geneTraitSignificance and GSPvalue to gene_info
+gene_info_combined <- gene_info_combined %>%
+  left_join(geneHeartCor, by = "gene_id") %>%
+  left_join(geneHeartPvalue, by = "gene_id") %>%
+  left_join(geneModuleMembershipCor, by = "gene_id") %>%
+  left_join(geneModuleMembershipPvalue, by = "gene_id")
+
+# Save the merged results to the supplemental data table
+supplementalTables$TableS5 <- gene_info_combined
+```
+
+
+## STEP 7: Final Analysis
+
+Hub genes are highly connected genes within a module and are often key drivers of the module’s function.
+
+We are going to focus on:
+
+	•	Heart-Specific Modules: Genes unique to the heart that drive specific heart traits.
+	•	Age-Correlated Modules: Genes driving specific heart traits.
+	
+Plots will be created to visualize the hub genes within each module.
+
+### Step 7A: Plot Average Eigene Expression
+
+```{r}
+plot_eigengenes <- function(MEs_ordered, TPM_metadata_heart,
+                            module, figureName = "Figure") {
+
+  # Merge MEs and metadata
+  plot_data <- MEs_ordered %>%
+    dplyr::select(all_of(module)) %>%
+    rownames_to_column("Sample") %>%
+    inner_join(TPM_metadata_heart, by = "Sample") %>%
+    dplyr::rename("Eigengene" = module)
+    
+  # Calculate the average eigengene expression by stage
+  avg_eigengene_by_age <- plot_data %>%
+    group_by(Age_in_Weeks) %>%
+    summarise(AverageEigengene = mean(Eigengene, na.rm = TRUE))
+
+  # Plot the average eigengene expression by age in weeks
+  p <- ggplot(
+    avg_eigengene_by_age, aes(x = Age_in_Weeks, y = AverageEigengene)) +
+    geom_smooth(method = "loess", color = "blue",
+                se = TRUE, level = 0.95) +  # Fit line with 95% CI
+    geom_point(color = "red", size = 2) +
+    scale_x_log10() +
+    labs(title = "Heart Eigengene Expression",
+         subtitle = paste(module, "module"),
+         x = "Age in Weeks Post-Conception",
+         y = "Average Eigengene Expression") +
+    theme_minimal() +
+    theme(
+        text = element_text(family = "Helvetica", size = 12),
+        plot.title = element_text(hjust = 0.5, face = "bold",
+                                  size = 16, margin = margin(b = 10)),
+        plot.subtitle = element_text(hjust = 0.5,
+                                     size = 14, margin = margin(b = 10)),
+        axis.title = element_text(size = 12, face = "bold"),
+        axis.text = element_text(size = 10),
+        axis.line = element_line(color = "black", linewidth = 0.5), 
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.margin = unit(c(1, 1, 1, 1), "cm")  # Add margin around the plot
+    ) +
+    
+    # Add vertical lines at specific ages
+    geom_vline(xintercept = c(10, 20, 38, 90, 298), 
+               linetype = "dashed", color = "gray") +
+    
+    # Add labels for each vertical line
+    annotate("text", x = 10, y = 0.03, label = "10 wk", 
+             vjust = 1.5, angle = 90, color = "gray") +
+    annotate("text", x = 20, y = 0.03, label = "20 wk",
+             vjust = 1.5, angle = 90, color = "gray") +
+    annotate("text", x = 38, y = 0.03, label = "Birth", 
+             vjust = 1.5, angle = 90, color = "gray") +
+    annotate("text", x = 90, y = 0.03, label = "1 year", 
+             vjust = 1.5, angle = 90, color = "gray") +
+    annotate("text", x = 298, y = 0.03, label = "5 year", 
+             vjust = 1.5, angle = 90, color = "gray")
+
+  # Save the plot
+  ggsave(paste0("Figures/", figureName, "_", module, 
+              "_Module_Average_Eigengene_Expression.pdf"), 
+       plot = p,
+       width = 8.5, height = 6, units = "in", dpi = 300, device = cairo_pdf)
+  
+  plot(p)  
+  return(p)
+}
+```
+
+### Step 7B: Plot Functional Enrichment:
+
+Perform Gene Ontology (GO) or pathway enrichment analysis on the protein genes within each module to identify overrepresented biological processes, pathways, or molecular functions.
+
+We use the protein-coding genes correlated with lncRNAs from each module of interest to understand implicated gene ontology terms.
+
+```{r}
+# Define the function for GO enrichment analysis
+perform_GO_enrichment <- function(gene_info_combined, module) {
+  
+  gene_list <- gene_info_combined %>%
+    filter(module_color == module,
+           gene_type == "protein") %>%
+    pull(gene_accession)
+    
+  # Perform GO enrichment analysis for all categories (BP, MF, CC)
+  go_all <- enrichGO(gene = gene_list,
+                     OrgDb = org.Hs.eg.db,
+                     keyType = "ENSEMBL",  # Use ENSEMBL IDs
+                     ont = "ALL",  # Analyze all three categories: BP, MF, CC
+                     pAdjustMethod = "BH",  # Benjamini-Hochberg adjustment
+                     pvalueCutoff = 0.01,
+                     qvalueCutoff = 0.05,
+                     readable = TRUE)  # Convert gene IDs to gene symbols
+  
+  # Prepare GO data for the appropriate ontology
+  hsGO_BP <- godata(annoDb = org.Hs.eg.db, ont = "BP", keytype = "ENSEMBL")
+  hsGO_MF <- godata(annoDb = org.Hs.eg.db, ont = "MF", keytype = "ENSEMBL")
+  hsGO_CC <- godata(annoDb = org.Hs.eg.db, ont = "CC", keytype = "ENSEMBL")
+
+  # Split the enriched GO terms by ontology (BP, MF, CC)
+  go_bp <- go_all@result[go_all@result$ONTOLOGY == "BP", ]
+  go_mf <- go_all@result[go_all@result$ONTOLOGY == "MF", ]
+  go_cc <- go_all@result[go_all@result$ONTOLOGY == "CC", ]
+
+  # Add IC as a column to enriched ontology groups
+  go_bp$IC <- hsGO_BP@IC[go_bp$ID]
+  go_mf$IC <- hsGO_MF@IC[go_mf$ID]
+  go_cc$IC <- hsGO_CC@IC[go_cc$ID]
+  
+  # Calculate semantic similarity by ontology (BP, MF, CC)
+  simMatrix_BP <- GOSemSim::termSim(go_bp$ID, go_bp$ID, semData = hsGO_BP, method = "Wang")
+  simMatrix_MF <- GOSemSim::termSim(go_mf$ID, go_mf$ID, semData = hsGO_MF, method = "Wang")
+  simMatrix_CC <- GOSemSim::termSim(go_cc$ID, go_cc$ID, semData = hsGO_CC, method = "Wang")
+
+  # Drop rows and columns where all values are NA
+  simMatrix_BP <- simMatrix_BP[rowSums(is.na(simMatrix_BP)) != ncol(simMatrix_BP), ]
+  simMatrix_BP <- simMatrix_BP[, colSums(is.na(simMatrix_BP)) != nrow(simMatrix_BP)]
+  simMatrix_MF <- simMatrix_MF[rowSums(is.na(simMatrix_MF)) != ncol(simMatrix_MF), ]
+  simMatrix_MF <- simMatrix_MF[, colSums(is.na(simMatrix_MF)) != nrow(simMatrix_MF)]
+  simMatrix_CC <- simMatrix_CC[rowSums(is.na(simMatrix_CC)) != ncol(simMatrix_CC), ]
+  simMatrix_CC <- simMatrix_CC[, colSums(is.na(simMatrix_CC)) != nrow(simMatrix_CC)]
+  
+  # Convert similarity matrix to distance matrix
+  distMatrix_BP <- 1 - simMatrix_BP
+  distMatrix_MF <- 1 - simMatrix_MF
+  distMatrix_CC <- 1 - simMatrix_CC
+  
+  # Ensure the matrix is square and symmetric
+  distMatrix_BP <- as.dist(distMatrix_BP)
+  distMatrix_MF <- as.dist(distMatrix_MF)
+  distMatrix_CC <- as.dist(distMatrix_CC)
+  
+  # Perform hierarchical clustering
+  hc_BP <- hclust(distMatrix_BP, method = "average")
+  hc_MF <- hclust(distMatrix_MF, method = "average")
+  hc_CC <- hclust(distMatrix_CC, method = "average")
+
+  # Cut the dendrogram to group terms into clusters (adjust h as needed)
+  clusters_BP <- cutree(hc_BP, h = 0.3)
+  clusters_MF <- cutree(hc_MF, h = 0.3)
+  clusters_CC <- cutree(hc_CC, h = 0.3)
+
+  # Group by cluster and select the representative term with the highest IC in each cluster
+  reducedTerms_BP <- go_bp %>%
+    mutate(Cluster = clusters_BP[ID]) %>%  # Add cluster info from clusters_BP
+    filter(!is.na(Cluster), !is.na(IC)) %>%  # Remove rows where Cluster or IC is NA
+    group_by(Cluster) %>%  # Group by cluster
+    # filter(IC == max(IC, na.rm = TRUE)) %>%  # Select the term with the highest IC
+    filter(p.adjust == min(p.adjust)) %>%  # Alternatively, select term with lowest P value 
+    ungroup()
+  reducedTerms_MF <- go_mf %>%
+    mutate(Cluster = clusters_MF[ID]) %>%  # Add cluster info from clusters_BP
+    filter(!is.na(Cluster), !is.na(IC)) %>%  # Remove rows where Cluster or IC is NA
+    group_by(Cluster) %>%  # Group by cluster
+    filter(p.adjust == min(p.adjust)) %>%  # Select the term with the highest IC
+    ungroup()
+  reducedTerms_CC <- go_cc %>%
+    mutate(Cluster = clusters_CC[ID]) %>%  # Add cluster info from clusters_BP
+    filter(!is.na(Cluster), !is.na(IC)) %>%  # Remove rows where Cluster or IC is NA
+    group_by(Cluster) %>%  # Group by cluster
+    filter(p.adjust == min(p.adjust)) %>%  # Select the term with the highest IC
+    ungroup()
+
+  # Combine the results of reduced terms from all ontologies into a single data frame
+  combinedReducedTerms <- rbind(reducedTerms_BP, reducedTerms_MF, reducedTerms_CC) %>%
+    mutate(Cluster = paste0(ONTOLOGY, Cluster))
+
+  # Transform adjusted p-values to -log10 scale
+  go_results <- combinedReducedTerms %>%
+    mutate(p_adj_log10 = -log10(p.adjust)) %>%
+    arrange(desc(p_adj_log10))
+  
+  # Return the significant results data frame (optional, for further processing)
+  return(go_results)
+}
+
+# Example usage:
+# gene_list <- c("ENSG00000139618", "ENSG00000157764", "ENSG00000198938")
+# go_results <- perform_GO_enrichment(gene_info_combined, "magenta")
+```
+
+
+The following code defines a function that takes the go_results data frame as input and creates a bar chart of the top 5 categories in each Gene Ontology (GO) category (BP, MF, CC). The protein coding genes from each module are used to derive functional enrichment.
+
+The top 5 functions will be graphed for each gene ontology term
+
+```{r}
+# Custom function to wrap text into two lines based on word count
+wrap_if_long <- function(text, word_threshold = 3) {
+  # Ensure input is a character string
+  text <- as.character(text)
+  
+  # Split the text into words
+  words <- unlist(strsplit(text, "\\s+"))  # Use "\\s+" to handle multiple spaces
+  
+  # Get the number of words
+  n_words <- length(words)
+  
+  if (n_words > word_threshold) {
+    # Determine the splitting point
+    first_line_words <- min(ceiling(n_words / 2), 4)  # Max 4 words on the first line
+    second_line_words <- n_words - first_line_words   # The rest on the second line
+    
+    # Combine the words into two lines
+    first_line <- paste(words[1:first_line_words], collapse = " ")
+    second_line <- paste(words[(first_line_words + 1):n_words], collapse = " ")
+    
+    return(paste(first_line, second_line, sep = "\n"))
+  } else {
+    return(text)  # If 3 or fewer words, return the original text
+  }
+}
+
+# Define the function to create a bar chart for GO enrichment results
+plot_GO_enrichment <- function(go_results, module, figureName, category_count = 5) {
+  
+  # Title the plot
+  title = paste0(module, " Module GO Enrichment Results")
+  
+  # Order by adjusted p-value and select the top 5 for each GO category
+  go_results <- go_results %>%
+    arrange(p.adjust) %>%  # Sort by p-value (ascending)
+    group_by(ONTOLOGY) %>%  # Group by GO category (BP, MF, CC)
+    slice_min(order_by = p.adjust, n = category_count)  # Select the top 5 by default
+  
+  # Transform the p-value to -log10 scale if not already done
+  if (!"p_adj_log10" %in% colnames(go_results)) {
+    go_results <- go_results %>%
+      mutate(p_adj_log10 = -log10(p.adjust))
+  }
+
+  # Apply word-based wrapping to GO term descriptions
+  go_results <- go_results %>%
+    mutate(Description = unlist(lapply(Description, wrap_if_long, word_threshold = 3)))
+  
+  # Create the bar chart
+  p <- ggplot(go_results, aes(x = p_adj_log10, 
+                              y = reorder(Description, p_adj_log10), 
+                              fill = ONTOLOGY)) +
+    geom_bar(stat = "identity") +
+    labs(title = "GO Enrichment Results",
+         subtitle = paste(module, "module"),
+         x = "-log10(padj)",
+         y = "GO Term Description") +
+    theme_minimal() +
+    theme(
+      text = element_text(family = "Helvetica", size = 12),
+      plot.title = element_text(hjust = 0.5, face = "bold",
+                                size = 16, margin = margin(b = 10)),
+      plot.subtitle = element_text(hjust = 0.5,
+                                   size = 14, margin = margin(b = 10)),
+      axis.title = element_text(size = 12, face = "bold"),
+      axis.text = element_text(size = 10),
+      axis.line = element_line(color = "black", linewidth = 0.5), 
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      legend.position = "bottom",
+      legend.text = element_text(size = 10),   # Set legend labels font size to 10
+      strip.text = element_blank(),  # Remove facet titles
+      plot.margin = unit(c(1, 1, 1, 1), "cm")  # Add margin around the plot
+    ) +
+    scale_fill_manual(values = c("BP" = "#D3436EFF", 
+                                 "MF" = "#231151FF", 
+                                 "CC" = "#FD9969FF")) +
+    facet_wrap(~ ONTOLOGY, scales = "free_y", ncol = 1)  # Facet by ONTOLOGY, with free y-scales
+  
+  # Define dimensions  and save plot
+  height <- ifelse(category_count >= 5, 11, 9)
+  ggsave(paste0("Figures/", figureName, "_", module, "_GO_Enrichment.pdf"), 
+         plot = p, width = 8.5, height = height, units = "in", dpi = 300,
+         device = cairo_pdf)
+    
+  # Return the plot
+  return(p)
+}
+
+# Example usage
+# p1 <- plot_GO_enrichment(go_results, "magenta", figure = "Figure4")
+# print(p1)
+```
+
+>*Supplemental Figure 16: GO Functional Enrichment Analysis for Protein-Coding Genes in the Magenta Module.* This bar chart illustrates the top 10 enriched Gene Ontology (GO) terms across three categories: Biological Process (BP), Molecular Function (MF), and Cellular Component (CC), identified from the protein-coding genes in the magenta module. The GO terms are selected based on the lowest adjusted p-values (Benjamini-Hochberg method), and the bars represent the -log10 transformation of these p-values, providing a clear view of the statistical significance of each term. The terms are color-coded by their GO category. The results highlight key biological processes, molecular functions, and cellular components associated with the magenta module, offering insights into the functional roles of the genes within this module.
+
+### Step 7C: Plot Hub Gene Module Membership vs. Gene Significance
+
+The code provided aims to further analyze the hub genes within a specific module by examining the relationship between Module Membership (MM) and Gene Significance (GS). This relationship can provide insights into how central certain genes (hub genes) are within a module and how strongly they are associated with a particular trait (e.g., the heart trait).
+
+MM  represents how strongly a gene is associated with the module eigengene (the first principal component of the module). High MM means the gene is highly connected within the module, making it a potential hub gene.
+
+GS measures the correlation between a gene’s expression and a specific trait (e.g., heart trait). High GS indicates that the gene is strongly associated with the trait.
+
+The scatter plot of MM versus GS helps identify genes that are both central to the module (high MM) and strongly associated with the trait (high GS). These genes are often key drivers of the biological processes associated with the trait and can be considered hub genes.
+
+```{r}
+# Define the function to process gene information for a specific module
+process_module <- function(gene_info_combined, module, figureName) {
+  
+  # Filter genes for the specified module
+  gene_pvalue_index <- which(colnames(gene_info_combined) == "HeartGene.PValue")
+  colnames_for_gene_list <- colnames(gene_info_combined)[1:gene_pvalue_index]
+  top_module_gene_info <- gene_info_combined %>%
+    filter(module_color == module) %>%
+    dplyr::select(all_of(c(colnames_for_gene_list,
+                           paste0("Module.Cor.", module),
+                           paste0("Module.PValue.", module))))
+  
+  # Identify the module membership column dynamically
+  module_cor_column <- paste0("Module.Cor.", module)
+  
+  # Extract hub genes (lncRNAs with high module membership)
+  hub_genes <- top_module_gene_info %>% 
+    filter(gene_type == "lncRNA" & .data[[module_cor_column]] >= 0.80) %>%
+    dplyr::select(all_of(c("gene_id", "module_color",
+                           colnames(top_module_gene_info)[10:13])))
+  
+  # Split data into lncRNAs and protein-coding genes
+  protein_genes <- top_module_gene_info %>% filter(gene_type == "protein")
+  lncRNA_genes <- top_module_gene_info %>% filter(gene_type == "lncRNA")
+  
+  # Define colors for lncRNA and protein coding genes
+  lncCol <- "#482878FF"  # Purple - alternative is dark purple: "#440154FF"
+  protCol <- "#1F9E89FF"  # Teal - alternative is a grey/blue: "#31688EFF"
+
+  # Create the ggplot
+  p <- ggplot() +
+    # Plot protein-coding genes first
+    geom_point(data = protein_genes, aes(x = .data[[module_cor_column]], y = HeartGene.Cor, 
+                                         fill = gene_type, shape = gene_type), 
+               size = 3, alpha = 0.7, stroke = 0.5, color = "black") +
+    # Plot lncRNAs on top
+    geom_point(data = lncRNA_genes, aes(x = .data[[module_cor_column]], y = HeartGene.Cor, 
+                                        fill = gene_type, shape = gene_type), 
+               size = 3, alpha = 0.8, stroke = 0.5, color = "black") +
+    # Add R and p-value for lncRNAs
+    stat_cor(data = lncRNA_genes, aes(x = .data[[module_cor_column]], y = HeartGene.Cor), 
+             label.x = 0.3, label.y = max(lncRNA_genes$HeartGene.Cor), 
+             p.accuracy = 0.001, r.accuracy = 0.001, size = 5, show.legend = FALSE,
+             color = lncCol) +
+    # Add R and p-value for protein-coding genes
+    stat_cor(data = protein_genes, aes(x = .data[[module_cor_column]], y = HeartGene.Cor), 
+             label.x = 0.3, label.y = max(protein_genes$HeartGene.Cor) - 0.1, 
+             p.accuracy = 0.001, r.accuracy = 0.001, size = 5, show.legend = FALSE,
+             color = protCol) +
+    # Add a vertical line at x = 0.8
+    geom_vline(xintercept = 0.8, linetype = "dashed", color = "black") +
+    # Label the vertical line
+    annotate("text", x = 0.82, y = 0.22, label = "Top Hub Genes", 
+             color = "black", angle = 90, vjust = 0.5, hjust = 0) +
+    labs(title = paste("Module membership vs. gene significance"),
+         subtitle = paste(module, "module"),
+         x = paste("Module Membership in", module, "module"),
+         y = "Gene Significance for Heart Trait") +
+    scale_fill_manual(values = c("lncRNA" = lncCol, "protein" = protCol)) +
+    scale_shape_manual(values = c("lncRNA" = 21, "protein" = 22)) +
+    xlim(c(0.2, 1)) +  # Set x-axis limits
+    ylim(c(0.2, 1)) +  # Set y-axis limits
+    theme_minimal() +
+    theme(
+      text = element_text(family = "Helvetica", size = 12),
+      plot.title = element_text(hjust = 0.5, face = "bold",
+                                size = 16, margin = margin(b = 10)),
+      plot.subtitle = element_text(hjust = 0.5,
+                                   size = 14, margin = margin(b = 10)),
+      axis.title = element_text(size = 14, face = "bold"),
+      axis.text = element_text(size = 12),
+      axis.ticks = element_line(color = "black", linewidth = 0.5),  # Add tick marks
+      axis.ticks.length = unit(0.25, "cm"),  # Length of tick marks
+      axis.line = element_line(color = "black", linewidth = 0.5), 
+      panel.background = element_rect(fill = "white", colour = NA),
+      panel.grid.major = element_line(color = "lightgray", linetype = "solid"),
+      panel.grid.minor = element_line(color = "lightgray", linetype = "dotted"),
+      legend.position = "bottom",
+      legend.title = element_text(size = 12),  # Set legend title font size to 12
+      legend.text = element_text(size = 10),   # Set legend labels font size to 10
+      plot.margin = unit(c(1, 1, 1, 1), "cm")  # Add margin around the plot
+    ) +
+    guides(fill = guide_legend(title = "Gene Type"),
+           shape = guide_legend(title = "Gene Type"))
+  
+  ggsave(paste0("Figures/", figureName, "_", module, 
+                "_Module_Membership_vs_Gene_Significance.pdf"), 
+         plot = p,
+         width = 8.5, height = 9.5, units = "in", dpi = 300, device = cairo_pdf)
+
+  # Return the plot
+  return(p)
+}
+
+# Example usage
+# hub_genes <- process_module(gene_info_combined, "magenta", "Figure_S16")
+```
+
+### Step 7D: Plot Gene Co-Expression Network: Cytoscape
+
+The create_and_view_network function is designed to create and visualize a gene co-expression network for a specified module using the TOM (Topological Overlap Matrix) and associated gene information. This function attempts to connect to Cytoscape to create and view the network interactively. If Cytoscape is not available, the function exports the network data to text files for later import.
+	
+```{r}
+create_and_view_network <- function(module, TOM_matrix, gene_info_combined,
+                                    output_dir = "Results", figureName = "Figure", 
+                                    threshold = 0.30, heart_gene_filter = TRUE) {
+  
+  # Attempt to connect to Cytoscape and set a flag
+  cytoscape_connected <- tryCatch(
+    {
+      cytoscapePing()  # Attempt to ping Cytoscape
+      TRUE  # If successful, set the flag to TRUE
+    },
+    error = function(e) {
+      FALSE  # If an error occurs, set the flag to FALSE
+    }
+  )
+  
+  # Filter genes for the specified module
+  gene_info_module <- filter(gene_info_combined, module_color == module)
+  target_genes <- gene_info_module$gene_id
+  heart_genes <- gene_info_module %>%
+    filter(chd_gene == TRUE) %>%
+    pull(gene_id)
+  
+  # Subset the TOM matrix to include only the genes in the specified module
+  TOM_module <- TOM_matrix[target_genes, target_genes]
+  
+  # Convert TOM matrix to edge list
+  # Convert TOM matrix to edge list
+  edge_list <- as.data.frame(as.table(TOM_module)) %>%
+    filter(Freq > threshold)  %>%  # Apply the threshold
+    dplyr::rename(
+      source = Var1,  # Rename for clarity
+      target = Var2,  # Rename for clarity
+      weight = Freq   # Rename for clarity
+    ) %>%
+    filter(source != target) %>%  # Remove self-directed edges
+    mutate(interaction = "co-expression") %>%  # Add interaction type
+    rowwise() %>%
+    mutate(
+      ordered_pair = list(sort(c(source, target)))  # Sort source and target
+    ) %>%
+    mutate(
+      source = ordered_pair[[1]],  # Assign the sorted values back to source and target
+      target = ordered_pair[[2]]
+    ) %>%
+    ungroup() %>%
+    distinct(source, target, weight, interaction)  # Remove duplicate edges
+  
+  cat(paste(nrow(edge_list), "edges prepared for visualization\n"))
+    
+  # Filter to only include nodes that have a connection to a heart gene
+  if(heart_gene_filter & length(heart_genes) > 0) {
+    edge_list <- edge_list %>%
+      filter(source %in% heart_genes | target %in% heart_genes)
+    cat(paste(nrow(edge_list), "network edges remain after selecting known CHD genes\n"))
+  }
+  
+  # Identify nodes that are part of at least one edge
+  nodes_with_edges <- unique(c(edge_list$source, edge_list$target))
+  
+  # Select module correlation and P value columns
+  module_cor_column <- paste0("Module.Cor.", module)
+  module_pval_column <- paste0("Module.PValue.", module)
+  
+  # Prepare node data
+  node_col_names <- c("HeartGene.Cor", "HeartGene.PValue",
+                      module_cor_column, module_pval_column)
+  
+  # Filter node_list to include only nodes with edges
+  node_list <- gene_info_module %>%
+    filter(gene_id %in% nodes_with_edges) %>%
+    mutate(gene_type = if_else(chd_gene == TRUE, "CHD", gene_type),
+           hub_gene = if_else(.data[[module_cor_column]] >= 0.80, "Hub", "Member")) %>%
+    dplyr::select(
+      id = gene_id,          # Ensure there's an `id` column
+      name = gene_symbol,    # Optional: `name` column for descriptive names
+      type = gene_type,      # Include additional attributes as needed
+      all_of(node_col_names)
+    )
+
+  cat(paste(nrow(node_list), "nodes prepared for network visualization\n"))
+  
+  # Re-filter edge_list to ensure all edges are between nodes that are still in node_list
+  edge_count_before_orphan <- nrow(edge_list)
+  edge_list <- edge_list %>%
+    filter(source %in% node_list$id & target %in% node_list$id)
+  edge_count_after_orphan <- nrow(edge_list)
+  
+  if(edge_count_before_orphan != edge_count_after_orphan) {
+    cat(paste(edge_count_after_orphan, "edges remain after filtering for orphaned nodes\n"))
+  }
+  
+  # Create the network in Cytoscape
+  if (cytoscape_connected) {
+    if (nrow(edge_list) > 0) {
+      message("Connection to Cytoscape successful!")
+      createNetworkFromDataFrames(edges = edge_list, 
+                                  nodes = node_list,
+                                  title = paste("Network for", module, "module"),
+                                  collection = "WGCNA Networks")
+    } else {
+      message("No edges available to create the network in Cytoscape.")
+    }
+    # Apply a layout and style
+    layoutNetwork("force-directed")
+    setVisualStyle("default")
+  } else {
+    message("Could not connect to Cytoscape.")
+  }
+  
+  # Export Cytoscape nodes and edges
+  nodeFilePath = paste0(output_dir, "/CytoscapeInput-nodes-", module, ".txt")
+  edgeFilePath = paste0(output_dir, "/CytoscapeInput-edges-", module, ".txt")
+  write_csv(node_list, nodeFilePath)
+  write_csv(edge_list, edgeFilePath)
+  
+  # Create igraph object
+  graph <- graph_from_data_frame(d = edge_list, vertices = node_list, directed = FALSE)
+
+  # Define colors for lncRNA and protein coding genes
+  lncCol <- "mediumpurple1"  # Purple - alternative is dark purple: "#440154FF"
+  protCol <- "lightseagreen"  # Teal - alternative is a grey/blue: "#31688EFF"
+  chdCol <- "gold"
+
+  # Set output filename
+  filename <- file.path(paste0(output_dir, "/network_", module, ".graphml"))
+
+  # Save graph to a GraphML file
+  write_graph(graph, filename, format='graphml')
+  
+  # Plot the network using igraph
+  pdf_file <- file.path(paste0("Figures/", figureName, "_igraph_network_", module, "_module.pdf"))
+  CairoPDF(file = pdf_file, width = 8, height = 8)
+  plot(graph, 
+     vertex.shape = "crectangle",  # Set the shape to ellipse
+     vertex.size = 30,  # Width of the ellipse
+     vertex.size2 = 8,  # Height of the ellipse
+     vertex.label = V(graph)$name,  # Node labels inside the ellipse
+     vertex.label.family = "Helvetica",  # Font family for labels
+     vertex.label.cex = 0.7,  # Font size for labels
+     vertex.label.color = "black",  # Font color for labels
+     vertex.label.dist = 0,  # Center the label inside the node
+     vertex.size = 5,  # Size of the nodes
+     edge.width = E(graph)$weight * 5,  # Width of the edges, scaled by weight
+     layout = layout_with_fr,  # Layout algorithm
+     vertex.color = ifelse(V(graph)$type == "CHD", chdCol, 
+                           ifelse(V(graph)$type == "lncRNA", lncCol, protCol)),
+     main = paste("Network for", module, "module"))
+  dev.off()
+  
+  return(graph)
+}
+
+# Example usage:
+# create_and_view_network("lightblue3", TOM, gene_info, output_dir = "Results",
+#                          figureName = "Figure_6A", threshold = 0.30, heart_gene_filter = TRUE)
+```
+
+### Step 7E: Gene type summary analysis
+
+The count_genes function filters and analyzes genes within a specified module. It selects genes by module correlation and, if hub = TRUE, further filters for hub genes with high module membership (correlation ≥ 0.80). The function then summarizes gene type counts, calculates enrichment p-values, and returns either a list containing both gene_counts and module_genes.
+
+```{r}
+# Function to generate counts
+count_genes <- function(gene_info_combined, module) {
+  
+  # Select module correlation and P value columns
+  module_cor_column <- paste0("Module.Cor.", module)
+  module_pval_column <- paste0("Module.PValue.", module)
+  
+  # Select module genes
+  gene_pvalue_index <- which(colnames(gene_info_combined) == "HeartGene.PValue")
+  module_genes <- gene_info_combined %>%
+    filter(module_color == module) %>%
+    dplyr::select(all_of(c(colnames(gene_info_combined)[1:gene_pvalue_index], 
+                           module_cor_column, module_pval_column)),
+                  -c(module_number, module_id, color_rgb)) %>%
+    dplyr::rename(
+      "GS.Cor" = "HeartGene.Cor",
+      "GS.Pvalue" = "HeartGene.PValue"
+      ) %>%
+    mutate(
+      GS.Cor = round(GS.Cor, 2),
+      GS.Pvalue = signif(GS.Pvalue, 4),
+      "MM.Cor" = round(.data[[module_cor_column]], 2),
+      "MM.Pvalue" = signif(.data[[module_pval_column]], 4)
+    ) %>%
+    dplyr::select(-all_of(c(module_cor_column, module_pval_column))) %>%
+    arrange(desc(MM.Cor))
+  
+  # Select genes with high module membership - hub genes
+  hub_genes <- module_genes %>%
+    filter(MM.Cor >= 0.80)
+  
+  # Summarize gene types across all genes in the dataset 
+  total_genes <- nrow(gene_info_combined)
+  gene_counts <- gene_info_combined %>%
+    summarise(
+      All = n(),
+      Protein = sum(gene_type == "protein"),
+      lncRNA = sum(gene_type == "lncRNA"),
+      CHD = sum(chd_gene)
+    ) %>%
+    pivot_longer(cols = everything(), names_to = "GeneType", values_to = "TotalCounts")
+  
+  # Summarize gene types across module of interest  
+  total_module <- nrow(module_genes)
+  module_counts <- module_genes %>%
+    summarise(
+      All = n(),
+      Protein = sum(gene_type == "protein"),
+      lncRNA = sum(gene_type == "lncRNA"),
+      CHD = sum(chd_gene)
+    ) %>%
+    pivot_longer(cols = everything(), names_to = "GeneType", values_to = "ModuleCounts")
+
+  # Summarize gene types across module hub genes  
+  total_hub <- nrow(hub_genes)
+  hub_counts <- hub_genes %>%
+    summarise(
+      All = n(),
+      Protein = sum(gene_type == "protein"),
+      lncRNA = sum(gene_type == "lncRNA"),
+      CHD = sum(chd_gene)
+    ) %>%
+    pivot_longer(cols = everything(), names_to = "GeneType", values_to = "HubCounts")
+  
+  # Custom function to format PValue
+  format_pvalue <- function(p, digits = 4) {
+    if (p == 0 || p == 1) {
+      return(as.character(p))
+    } else if (p < 0.001) {
+      return(format(p, scientific = TRUE, digits = digits))
+    } else {
+      return(format(round(p, digits), trim = TRUE))
+    }
+  }
+  
+  # Use hypergeometic distribution to determine gene type enrichment in module
+  gene_counts <- gene_counts %>%
+    left_join(module_counts, by = "GeneType") %>%
+    rowwise() %>%
+    mutate(
+      ModulePValue = phyper(ModuleCounts - 1,
+                            TotalCounts,
+                            total_genes - TotalCounts,
+                            total_module,
+                            lower.tail = FALSE)
+    ) %>%
+    mutate(ModulePValue = format_pvalue(ModulePValue, digits = 4))
+
+  # Use hypergeometic distribution to determine gene type enrichment in module
+  gene_counts <- gene_counts %>%
+    left_join(hub_counts, by = "GeneType") %>%
+    rowwise() %>%
+    mutate(
+      HubPValue = phyper(HubCounts - 1,
+                         TotalCounts,
+                         total_genes - TotalCounts,
+                         total_hub,
+                         lower.tail = FALSE)
+    ) %>%
+    mutate(HubPValue = format_pvalue(HubPValue, digits = 4))
+
+  # Extracting values from the gene_counts tibble
+  module_all <- gene_counts %>% filter(GeneType == "All")
+  module_lncRNA <- gene_counts %>% filter(GeneType == "lncRNA")
+  module_chd_gene <- gene_counts %>% filter(GeneType == "CHD")
+  hub_all <- gene_counts %>% filter(GeneType == "All")
+  hub_lncRNA <- gene_counts %>% filter(GeneType == "lncRNA")
+  hub_chd_gene <- gene_counts %>% filter(GeneType == "CHD")
+  
+  # Constructing the description
+  description <- paste0(
+    "The ", module, " module consists of ", module_all$ModuleCounts, 
+    " genes. The ", module_lncRNA$ModuleCounts, " lncRNAs (", 
+    round(module_lncRNA$ModuleCounts / module_all$ModuleCounts * 100, 1),
+    "%, p=", module_lncRNA$ModulePValue, ") and ", 
+    module_chd_gene$ModuleCounts, " known CHD genes (", 
+    round(module_chd_gene$ModuleCounts / module_all$ModuleCounts * 100, 1), 
+    "%, p=", module_chd_gene$ModulePValue, ") are significantly enriched in the ",
+    "module. ",  hub_all$HubCounts, " hub genes were identified within the module (",
+    round(hub_all$HubCounts / module_all$ModuleCounts * 100, 1), "%). ",
+    "Within the hub genes, ", hub_lncRNA$HubCounts, " were lncRNAs (",
+    round(hub_lncRNA$HubCounts / hub_all$HubCounts * 100, 1), "%, p=", 
+    hub_lncRNA$HubPValue, "). Strikingly, ", hub_chd_gene$HubCounts, " of the ", 
+    module_chd_gene$ModuleCounts, " known CHD genes in the module were within the hub, ",
+    "representing a significant enrichment (p=", hub_chd_gene$HubPValue, ").\n"
+  )
+  
+  # Print the description
+  logMessage(description)
+  
+  # Tidy merged module table for export
+  module_genes <- module_genes %>%
+    mutate(gene_type = ifelse(chd_gene, "CHD", gene_type)) %>%
+    dplyr::select(-chd_gene)
+  
+  return(list(gene_counts = gene_counts, 
+              module_genes = module_genes,
+              hub_genes = hub_genes,
+              description = description))
+}
+```
+
+
+### Step 7F: CNV impact on specific modules
+
+Create summary table by module of patient counts and diagnosis counts
+
+```{r}
+# Step 1: Split the lncbook_genes column into individual gene IDs
+cnv_genes_split <- CNV_iso %>%
+  dplyr::select(INDEX, ID, Diagnosis, lncbook_genes) %>%
+  separate_rows(lncbook_genes, sep = "; ")  # Split gene IDs by "; "
+
+# Step 2: Join with gene_info_combined to find modules for each gene
+cnv_genes_with_modules <- cnv_genes_split %>%
+  left_join(gene_info_combined, by = c("lncbook_genes" = "gene_id"))
+
+# Step 3: Aggregate and create a unique list of modules for each CNV
+cnv_modules_summary <- cnv_genes_with_modules %>%
+  group_by(INDEX, ID, Diagnosis) %>%
+  summarise(
+    Impacted_Modules = paste(na.omit(unique(module_color)), collapse = "; "),  # Exclude NA values
+    .groups = 'drop'
+  )
+
+# Step 4: Merge Impacted_Modules by patient (ID), ensuring unique modules
+patient_module_summary <- cnv_modules_summary %>%
+  group_by(ID, Diagnosis) %>%  # Group by Patient ID and Diagnosis
+  summarise(
+    Unique_Impacted_Modules = paste(unique(unlist(strsplit(Impacted_Modules, "; "))), collapse = "; "),
+    .groups = 'drop'
+  )
+
+# Step 5: Expand the Unique_Impacted_Modules column into separate rows
+patient_module_expanded <- patient_module_summary %>%
+  separate_rows(Unique_Impacted_Modules, sep = "; ")  # Split modules by "; " into separate rows
+
+# Step 6: Identify singleton module hits, excluding patients with no modules
+singleton_hits <- patient_module_summary %>%
+  filter(!is.na(Unique_Impacted_Modules) & 
+           Unique_Impacted_Modules != "" & 
+           !grepl(";", Unique_Impacted_Modules))  # Exclude empty and multiple-module entries
+
+# Step 7: Calculate Singleton_Hits before grouping by Diagnosis
+singleton_hits_summary <- singleton_hits %>%
+  group_by(Unique_Impacted_Modules) %>%
+  summarise(Singleton_Hits = n())
+
+# Step 8: Count the number of times each module is associated with a patient for each diagnosis
+module_diagnosis_summary <- patient_module_expanded %>%
+  group_by(Unique_Impacted_Modules, Diagnosis) %>%
+  summarise(
+    Patient_Count = n(),  # Count the number of patients
+    .groups = 'drop'
+  ) %>%
+  pivot_wider(
+    names_from = Diagnosis, 
+    values_from = Patient_Count, 
+    values_fill = 0,  # Fill missing values with 0
+    names_prefix = "Diagnosis_"  # Optional: Add a prefix to the diagnosis column names
+  ) %>%
+  mutate(Total_Patients = rowSums(across(starts_with("Diagnosis_")))) %>%
+  rename("Module" = "Unique_Impacted_Modules") %>%
+  left_join(singleton_hits_summary, by = c("Module" = "Unique_Impacted_Modules")) %>%  # Add Singleton_Hits
+  replace_na(list(Singleton_Hits = 0)) %>%  # Replace NA values in Singleton_Hits with 0
+  dplyr::select(Module, Total_Patients, Singleton_Hits, everything()) %>%  # Reorder columns
+  arrange(desc(Total_Patients))  # Arrange by total number of patients
+
+# Step 9: Join to original module summary data
+module_diagnosis <- color_guide_merged %>%
+  left_join(module_diagnosis_summary, by = c("module_color" = "Module"))
+
+# Step 10: Create supplemental data table
+supplementalTables$TableS6 <- module_diagnosis
+```
+
+### Step 7G: Final Analysis
+
+Display significant modules for the three analysis groupings: organ, heart and developmental stage.
+
+```{r}
+style_kable(head(merged_results_organ %>% 
+            arrange(desc(abs(Correlation))), n = 10),
+            "Modules Correlated Across Organs")
+
+style_kable(head(merged_results_heart, n = 10),
+            "Modules Correlated within the Heart")
+
+style_kable(head(merged_results_heart_age, n = 10),
+            "Modules Correlated with Developmental Stage within the Heart")
+```
+
+The magenta, floralwhite and darkgreen modules have the highest correlation within the heart. The floralwhite and magenta modules also demonstrat a significnant negative correlation with development stage (suggesting high expression embyonically, and decreasing expression over time). 
+
+#### Step 7Gi: Visualize Eigengenes
+
+```{r Eigengene Expression}
+# Manually select a module to explore
+module1 <- as.character(merged_results_heart$module_color[1])
+
+print(as.character(module1))
+
+# Visualize Eigengene Expression
+Fig4 <- plot_eigengenes(MEs_ordered, TPM_metadata_heart,
+                        module1, figureName = "Figure_4")
+print(Fig4)
+```
+
+>*Figure 4. Magenta Module Eigengene Expression Across Developmental Stages in the Heart.* The eigengene expression for the magenta module is shown across various developmental stages in the heart, plotted by age (PCW). The red data points represent the average eigengene expression at each stage, with a LOESS-smoothed line (blue) fitted to highlight the trend over time. The gray shading indicates the 95% confidence interval, showing the range within which the trend line is expected to fall. Vertical dashed gray lines indicate key developmental milestones: 10 weeks, 20 weeks, birth (38 weeks), 1 year, and 5 years post-conception. These milestones mark significant transitions in heart development, providing context for the observed changes in eigengene expression. The expression level increases during early development, peaking between 10–20 PCW and gradually decreasing. 
+
+#### Step 7Gii: Visualize Enrichment
+
+```{r GO Enrichment Analysis}
+# GO Enrichment Analysis
+go_results1 <- perform_GO_enrichment(gene_info_combined, module1)
+supplementalTables$TableS7 <- go_results1
+FigS16 <- plot_GO_enrichment(go_results1, module1, 
+                            figureName = "Figure_S16", category_count = 10)
+
+# Define a vector of keywords to capture heart-related ontology terms
+heart_keywords <- c(
+  "heart", "cardi", "myocard", "ventric", "atrial", "atrium", "circulat", 
+  "vascul", "valve", "arter", "vein", "aorta", "pericard", 
+  "coronary", "endocard", "epicard", "mesocard", "outflow", "pulmonary", 
+  "septal", "chamber"
+)
+
+# Create a regular expression pattern that matches any of the keywords
+pattern <- paste(heart_keywords, collapse = "|")  # Create a pattern like "heart|cardi|myocard|..."
+
+# Filter go_results1 for descriptions containing any heart-related terms, case insensitive
+go_results_filtered <- go_results1 %>%
+  filter(grepl(pattern, Description, ignore.case = TRUE))
+
+# Plot heart-related GO enrichment
+Fig5 <- plot_GO_enrichment(go_results_filtered, module1, 
+                           figureName = "Figure_5", category_count = 30)
+print(Fig5)
+```
+
+>*Figure 5. Functional Enrichment of Heart-Related Biological Processes in the Magenta Module.* This bar chart presents 26 significantly enriched GO biological process (BP) terms related to the heart and cardiovascular system, derived from the protein-coding genes in the magenta module. Semantically similar terms were collapsed, and the most significant terms were selected based on their lowest adjusted p-values (Benjamini-Hochberg method), all below 0.05. Each bar represents the -log10 transformation of the adjusted p-values, indicating the relative statistical significance. The analysis highlights the magenta module’s enrichment for genes with key roles in heart development and function.
+
+#### Step 7Giii: Visualize Hub Genes
+
+```{r Visualize hub genes}
+# Hub gene scatter plot visualiation
+Fig6 <- process_module(gene_info_combined, module1, "Figure_6")
+print(Fig6)
+```
+
+>*Figure 6. Identification of hub genes in the magenta module.* This scatter plot illustrates the relationship between Module Membership (MM) and Gene Significance (GS) for genes within the magenta module (ME03). Module Membership reflects how strongly a gene is associated with the module eigengene, while Gene Significance measures the correlation between a gene’s expression and the heart trait. Genes are categorized into lncRNAs (purple circles) and protein-coding genes (teal squares). The top hub genes, which are highly connected within the module and strongly associated with the heart trait, are emphasized by a dashed vertical line at MM = 0.8. The plot also includes correlation (R) and p-values for both lncRNAs and protein-coding genes, calculated separately and displayed on the graph to indicate the strength and significance of the correlation between Module Membership and Gene Significance. This visualization is crucial for identifying lncRNA hub genes within the module, which may play essential roles in the heart-related biological processes associated with the module.
+
+#### Step 7Giv: Visualize Network
+
+```{r Cytoscape network}
+# Create networks for Cytoscape
+Fig7 <- create_and_view_network(module = module1, TOM_matrix = TOM, gene_info_combined, 
+                                output_dir = "Results", figureName = "Figure_7", 
+                                threshold = 0.30, heart_gene_filter = TRUE)
+print(Fig7)
+```
+
+>*Figure 7. Gene Network Visualization of Hub Genes in the Magenta Module.* This figure visualizes the co-expression network of hub genes within the magenta module (ME03), generated using Cytoscape. Nodes represent hub genes, color-coded by gene type: gold for known CHD genes, purple for lncRNAs, and light green for protein-coding genes. Edges indicate co-expression interactions between genes based on the TOM matrix, with a threshold of TOM > 0.30. Hub genes are defined as those with high module membership (R ≥ 0.80). Co-expression edges connecting to lncRNA genes are highlighted in red. The network is divided into two panels for clarity: (A) Seven of the eighteen CNV-lncRNA hub genes are co-expressed with NKX2-5, a critical transcription factor for early heart development. (B) A highly interconnected network of known CHD genes and other protein-coding genes, all co-expressed with NKX2-5. For clarity, redundant edges were removed and indicated with an arrow and curly brace.
+
+#### Step 7Gv: Prepare summary tables
+
+```{r Summary of hub genes}
+# Summarize hub genes
+results1 <- count_genes(gene_info_combined, module1)
+
+style_kable(results1$gene_counts,
+            paste0("Gene and hubgenes types within the ", module1, " module"))
+
+supplementalTables$TableS8 <- results1$module_genes
+```
+
+##### Main Paper Table 1: lncRNA and CHD hubgenes
+
+```{r Table 1}
+# Select hub genes for table
+final_hub <- results1$module_genes %>%
+  filter(MM.Cor >= 0.8 & (gene_type == "lncRNA" | gene_type == "CHD")) %>%
+  arrange(gene_type, desc(MM.Cor)) %>%
+  dplyr::select(-all_of(c("gene_id", "module_color", "CCVM_Patient_Count",
+                          "CCVM_Patient", "CTD", "LVOTO", "RVOTO", "Septaldefect",
+                          "APVR", "Septal+LVOTO", "HTX", "AVSD")))
+
+# Write Table 1
+write_xlsx(final_hub, "Results/Draft_Table_1.xlsx")
+
+# View Table 1
+style_kable(final_hub)
+```
+
+*Table 1. Known CHD and lncRNA Hub Genes from the Magenta Module (ME03).*
+
+For each gene, the table provides the module membership correlation (MM.Cor) and its associated p-value, which indicates the strength of each gene’s association with the magenta module. Additionally, the table shows the gene significance correlation (GS.Cor) and its p-value, reflecting the correlation between each gene and heart-related traits. This summary highlights hub genes highly correlated with the module, including both protein-coding CHD genes and lncRNAs.
+
+##### Main Paper Table 2: Pull cytolocation for lncRNA hubgenes
+
+```{r Table 2}
+# Custom function to concatenate values and counts
+concat_with_counts <- function(x) {
+  counts <- table(x)
+  result <- ifelse(counts > 1, paste0(names(counts), " (", counts, ")"), names(counts))
+  return(paste(result, collapse = "; "))
+}
+
+# Select hub lncRNAs
+lncRNA_hub <- results1$module_genes %>%
+  filter(MM.Cor >= 0.8 & gene_type == "lncRNA")
+
+lncRNA_hub_patients <- lncRNA_hub %>%
+  dplyr::select(gene_id, CCVM_Patient) %>%
+  separate_rows(CCVM_Patient, sep = "; ") %>%  # Split patients by "; "
+  left_join(CNV_iso, by = c("CCVM_Patient" = "ID"), relationship = "many-to-many") %>%
+  mutate(
+    OverlappingCNV = paste(Cytolocation, tolower(CNV_type))
+  ) %>%
+  group_by(gene_id) %>%
+  summarise(
+    OverlappingCNV = concat_with_counts(OverlappingCNV),
+    Diagnosis = concat_with_counts(Diagnosis),
+    CCVM_Patient = paste(unique(CCVM_Patient), collapse = "; "),
+    .groups = 'drop'
+  ) %>%
+  rename(
+    "LncBook Identifier" = gene_id,
+    "Overlapping CNV" = OverlappingCNV,
+    "Cardiac Phenotype" = Diagnosis,
+    "CCVM Patient(s)" = CCVM_Patient
+  )
+
+# Write Table 2
+write_xlsx(lncRNA_hub_patients, "Results/Draft_Table_2.xlsx")
+
+# View Table 2
+style_kable(lncRNA_hub_patients)
+```
+
+*Table 2: lncRNA Hub Genes and Associated CNVs and Cardiac Phenotypes.*
+
+Each lncRNA from the magenta module (ME03) is listed alongside the corresponding chromosomal region of the overlapping CNV (e.g., gain or loss) and the associated cardiac phenotype. The table also includes patient identifiers and CHD classification from the CCVM cohort who exhibit the relevant CNV, directly linking the genetic variations and observed heart conditions.
+
+##### Main Paper Table 3: Gini Coefficient
+
+We will identify genes in the magenta module that have a Gini index published in VanOudenhove et al., 2020. 
+
+>VanOudenhove J, Yankee TN, Wilderman A, Cotney J. Epigenomic and Transcriptomic Dynamics During Human Heart Organogenesis. Circ Res. 2020 Oct 9;127(9):e184-e209. doi: 10.1161/CIRCRESAHA.120.316704. Epub 2020 Aug 9. PMID: 32772801; PMCID: PMC7554226.
+
+```{r Table 3}
+# Import LncBook conversion CSV
+lncbook_conversion <- read_csv("PublicData/LncBook_id_conversion.csv", 
+                               show_col_types = FALSE) %>%
+  dplyr::select(geneid, gencode) %>%
+  mutate(gencode = ifelse(gencode == "N/A", NA, gencode), # Convert "N/A" to NA
+         gencode = gsub("\\..*", "", gencode)) %>%  # Drop versions from the accession
+  filter(!is.na(gencode))  # Remove rows where gencode is NA
+  
+# Annotate magenta module hub genes with Ensembl accession
+hub_genes <- results1$module_genes %>%
+  left_join(lncbook_conversion, by = c("gene_id" = "geneid")) %>%
+  filter(MM.Cor >= 0.8 & (gene_type == "lncRNA" | gene_type == "CHD")) %>%
+  mutate(Accession = ifelse(is.na(gencode), gene_accession, gencode))
+
+# Read in the Excel file from worksheet 2 ("Gene_Gini_scores")
+gini_data <- read_excel("PublicData/Cotney_CircRes_316709_online_table_v.xlsx", 
+                        sheet = "Gene_Gini_scores", 
+                        skip = 1,  # Skip the first row
+                        col_names = c("Accession", "Gini_Coefficient", 
+                                      "Max_Tissue", "Max_Expression", "Symbol"))
+
+# Join Gini data to hub genes
+hub_genes_gini <- hub_genes %>%
+  inner_join(gini_data, by = "Accession") %>%
+  dplyr::select(Accession, Symbol, gene_type, Gini_Coefficient,
+                Max_Tissue, Max_Expression) %>%
+  dplyr::rename("Type" = "gene_type") %>%
+  mutate(
+    Gini_Coefficient = round(Gini_Coefficient, 3),
+    Max_Expression = round(Max_Expression, 0)
+  ) %>%
+  arrange(desc(Gini_Coefficient))
+
+# Write Table 2
+write_xlsx(hub_genes_gini, "Results/Draft_Table_3.xlsx")
+
+# View Table 2
+style_kable(hub_genes_gini)
+
+# Summarize results
+logMessage(paste0(
+  "Of the ", sum(hub_genes$gene_type == "CHD"), " knowm CHD genes in the hub, ",
+  sum(hub_genes_gini$Type == "CHD" & hub_genes_gini$Gini_Coefficient > 0.5),
+  " have a significant Gini coefficient. Of the ",
+  sum(hub_genes$gene_type == "lncRNA"), " lncRNA hub genes, ", 
+  sum(!is.na(hub_genes$gencode) & hub_genes$gene_type == "lncRNA"),
+  " have an Ensembl accession. Of these, ", sum(hub_genes_gini$Type == "lncRNA"), 
+  " lncRNAs are expressed in the embyonic heart and have a Gini coefficient, ",
+  sum(hub_genes_gini$Type == "lncRNA" & hub_genes_gini$Gini_Coefficient > 0.5),
+  " have a Gini coefficient > 0.5."
+  ))  
+```
+
+*Table 3: Gini Coefficient Analysis of Hub Genes in the Magenta Module*
+
+This table presents the Gini coefficients for hub genes identified in the magenta module (ME03). The table includes hub genes that are either known CHD genes or lncRNAs. The Gini coefficient, a measure of tissue-specific gene expression, is calculated for each gene, with higher values indicating tissue-specific expression. Genes with a Gini coefficient > 0.5 and maximal expression in the embryonic heart are considered to be candidate CHD genes. Out of 8 known CHD hub genes, five were found to have significant embryonic heart-specific expression (Gini coefficient > 0.5). Among the 18 lncRNA hub genes, 7 of the 9 with Ensembl accessions have a Gini coefficient, and five are maximally expressed in the embryonic heart. Of these, 4 lncRNAs exhibit significant heart-specific expression with a Gini coefficient greater than 0.5.
+
+##### Supplemental Data Tables
+
+Write supplental data table 1-8 to an Excel file.
+
+```{r}
+# Save supplemental data table
+write_xlsx(supplementalTables, "Results/Penaloza_Supplemental_Data_Tables.xlsx")
+```
+
+*Supplemental Data Table 1:* WGCNA modules and their associated counts of protein-coding genes, lncRNA genes, and known CHD genes.
+
+*Supplemental Data Table 2:* Pearson correlation values for the module eigengene-organ association across the 7 tissues for the 40 modules.
+
+*Supplemental Data Table 3:* Pearson correlation of modules correlated with the heart trait.
+
+*Supplemental Data Table 4:* Pearson correlation of modules correlated with heart developmental stage.
+
+*Supplemental Data Table 5:* Gene-level data, highlighting module membership (MM) and gene significance (GS).
+
+*Supplemental Data Table 6:* Representation of CNVs by patient and diagnosis within each module.
+
+*Supplemental Data Table 7:* Gene Ontology (GO) enrichment results for the magenta module (ME03).
+
+*Supplemental Data Table 8:* Identification of hub genes impacted by CNVs in the magenta module (ME03).
+
+

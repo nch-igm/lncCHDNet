@@ -1,0 +1,59 @@
+/* Custom CSS for table caption */
+caption, .kable-caption {
+  color: black !important; /* Make the caption text black */
+  font-weight: bold !important; /* Make the caption text bold */
+  font-size: 14pt !important; /* Set the caption text size to 14pt */
+  text-align: center; /* Center align the caption text */
+  caption-side: top; /* Ensure caption is at the top of the table */
+}
+
+/* Additional styles for enhancing the table */
+table {
+  border-collapse: collapse; /* Collapse borders between cells */
+  width: auto; /* Ensure the table width is determined by its content */
+  margin-left: auto; /* Center align the table */
+  margin-right: auto; /* Center align the table */
+}
+
+th, td {
+  padding: 8px; /* Add some padding inside table cells */
+  text-align: left; /* Align text to the left in cells */
+  border-bottom: 1px solid #ddd; /* Add a bottom border to header and cells */
+}
+
+th {
+  background-color: #f2f2f2; /* Light grey background for the table header */
+}
+
+/* Ensure tables and their containers have no additional margin or padding */
+.table-container, .kable-table {
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+/* Responsive image handling */
+img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Additional styles for increasing TOC levels to 3 */
+#toc ul.nav li ul li {
+    display: none;
+    max-height: none;
+}
+
+#toc ul.nav li.active ul li  {
+    display: block;
+    max-height: none;
+}
+
+#toc ul.nav li ul li ul li {
+    max-height: none;
+    display: none !important;
+}
+
+#toc ul.nav li ul li.active ul li {
+    max-height: none;
+    display: block !important;
+}

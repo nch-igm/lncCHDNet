@@ -1,30 +1,10 @@
----
-title: "Data Wrangling CHD Cohort README"
-author: "Jacqueline Penaloza and Peter White"
-date: "`r Sys.Date()`"
-department: "The Office of Data Sciences"
-organization: "Abigail Wexner Research Institute, Nationwide Children's Hospital"
-address: "575 Children's Crossroad, Columbus, OH 43215"
-output:
-  rmdformats::downcute:
-    code_folding: show           # Show code by default with folding
-    self_contained: true         # Ensure the HTML file is self-contained
-    thumbnails: false            # Disable thumbnails
-    lightbox: true               # Enable lightbox for images
-    gallery: false               # Disable gallery view for images (replaces thumbnails)
-    downcute_theme: "default"    # Use the light theme (options: “default”, “chaos”)
-    number_sections: true        # Enable numbered sections
-    toc_depth: 3                 # Set the depth of the table of contents
-    css: "Penaloza_Custom_Styling.css"  # Link to the external CSS file
-editor_options:
-  markdown:
-    wrap: sentence               # Wrap lines at sentence boundaries
-  chunk_output_type: console     # Show code chunk output in the console
-pkgdown:
-  as_is: true                    # Maintain formatting with pkgdown
----
+# HeartiLNC - CCVM Long Non-Coding RNA (lncRNA) Analysis
 
-# CCVM Long Non-Coding RNA (lncRNA) Analysis
+**Author**: Jacqueline Penaloza and Peter White  
+**Date**: September 18, 2024
+**Department**: The Office of Data Sciences  
+**Organization**: Abigail Wexner Research Institute, Nationwide Children's Hospital  
+**Address**: 575 Children's Crossroad, Columbus, OH 43215 USA
 
 This repository contains R scripts for the analysis of long non-coding RNAs (lncRNAs) associated with copy number variants (CNVs) in congenital heart disease (CHD) patients from the CCVM cohort. The analysis includes transcript quantification, network construction using WGCNA, and functional enrichment analysis of lncRNAs involved in CHD.
 
@@ -185,4 +165,4 @@ Ensure that the data files required for analysis (e.g., TPM matrices, metadata) 
 ## Network Visualization
 
 The function `create_and_view_network()` within the notebook `Penaloza_CCVM_Notebook_1B.Rmd` allows for the creation and visualization of gene co-expression networks. The network can be viewed using Cytoscape, and the function saves the network as a GraphML file for further analysis.
-# HeartiLNC
+
