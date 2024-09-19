@@ -8,6 +8,8 @@
 
 This repository contains R scripts for the analysis of long non-coding RNAs (lncRNAs) associated with copy number variants (CNVs) in congenital heart disease (CHD) patients from the CCVM cohort. The analysis includes transcript quantification, network construction using WGCNA, and functional enrichment analysis of lncRNAs involved in CHD.
 
+[[https://github.com/nch-igm/lncCHDNet/blob/main/Figures/Figure1.png]]
+
 ## Project Overview
 
 In this project, we aim to investigate the role of lncRNAs impacted by CNVs in CHD. Using the WGCNA method, we identified key gene modules and candidate lncRNAs associated with heart development. This repository contains R Markdown notebooks that guide the data processing, analysis, and visualization steps:
