@@ -1,4 +1,4 @@
-# lncCHDNet - CCVM Long Non-Coding RNA (lncRNA) Analysis
+# lncCHDNet - Long Non-Coding RNAs (lncRNAs) Congenital Heart Disease Network analysis
 
 **Author**: Jacqueline Penaloza and Peter White  
 **Date**: September 18, 2024
