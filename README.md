@@ -1,4 +1,4 @@
-# HeartiLNC - CCVM Long Non-Coding RNA (lncRNA) Analysis
+# lncCHDNet - CCVM Long Non-Coding RNA (lncRNA) Analysis
 
 **Author**: Jacqueline Penaloza and Peter White  
 **Date**: September 18, 2024
