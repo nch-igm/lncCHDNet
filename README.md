@@ -1,6 +1,6 @@
 # lncCHDNet - Long Non-Coding RNAs (lncRNAs) Congenital Heart Disease Network analysis
 
-**Author**: Jacqueline Penaloza and Peter White  
+**Author**: J. Penaloza and Peter White  
 **Date**: September 18, 2024
 
 **Department**: The Office of Data Sciences  
