@@ -7,7 +7,7 @@
 **Organization**: Abigail Wexner Research Institute, Nationwide Children's Hospital  
 **Address**: 575 Children's Crossroad, Columbus, OH 43215 USA
 
-This repository contains R scripts for the analysis of long non-coding RNAs (lncRNAs) associated with copy number variants (CNVs) in congenital heart disease (CHD) patients from the CCVM cohort. The analysis includes transcript quantification, network construction using WGCNA, and functional enrichment analysis of lncRNAs involved in CHD.
+This repository contains R notebooks for the analysis of long non-coding RNAs (lncRNAs) associated with copy number variants (CNVs) in congenital heart disease (CHD) patients from the CCVM cohort. The analysis includes transcript quantification, network construction using WGCNA, and functional enrichment analysis of lncRNAs involved in CHD.
 
 ![Figure1](https://github.com/user-attachments/assets/32793368-c572-46de-9630-6c8d80f5de04)
 
